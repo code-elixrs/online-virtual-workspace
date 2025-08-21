@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import './index.css';
 
 // A simple component to represent a room on the map.
@@ -15,9 +15,13 @@ const Room = ({ name }) => {
 };
 
 // A component to represent a user's avatar on the map.
-const UserAvatar = ({ name }) => {
+// The position is now controlled by props.
+const UserAvatar = ({ name, style }) => {
   return (
-    <div className="flex flex-col items-center justify-center p-1 bg-blue-500 text-white rounded-full w-12 h-12 border-2 border-blue-400 shadow-lg cursor-pointer absolute transition-transform duration-300 hover:scale-110">
+    <div
+      className="flex flex-col items-center justify-center p-1 bg-blue-500 text-white rounded-full w-12 h-12 border-2 border-blue-400 shadow-lg cursor-pointer absolute transition-all duration-500 ease-in-out"
+      style={style}
+    >
       <span className="text-xs font-semibold">{name}</span>
     </div>
   );
@@ -25,16 +29,32 @@ const UserAvatar = ({ name }) => {
 
 // This is the LobbyView component. It will contain the virtual office map and all users.
 const LobbyView = () => {
-  const users = [
-    { name: 'Alice', position: 'absolute top-1/4 left-1/4' },
-    { name: 'Bob', position: 'absolute top-1/2 left-3/4' },
-    { name: 'Charlie', position: 'absolute top-3/4 left-1/3' },
+  // Use a state variable to manage the current user's position.
+  const [userPosition, setUserPosition] = useState({ x: 0, y: 0 });
+
+  // A dummy list of other users to display.
+  const otherUsers = [
+    { name: 'Bob', style: { top: '25%', left: '75%' } },
+    { name: 'Charlie', style: { top: '75%', left: '33%' } },
   ];
+
+  // This handler will update the user's position when the map is clicked.
+  const handleMapClick = (event) => {
+    // Get the bounding box of the map container.
+    const rect = event.currentTarget.getBoundingClientRect();
+    // Calculate the click position relative to the container.
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
+    setUserPosition({ x, y });
+  };
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-4">
       <h2 className="text-2xl font-semibold mb-4 text-white">The Virtual Office Lobby</h2>
-      <div className="relative bg-gray-800 border border-gray-700 w-full max-w-4xl h-96 rounded-lg shadow-inner flex items-center justify-center text-gray-400 p-8">
+      <div
+        className="relative bg-gray-800 border border-gray-700 w-full max-w-4xl h-96 rounded-lg shadow-inner flex items-center justify-center text-gray-400 p-8 overflow-hidden"
+        onClick={handleMapClick}
+      >
         <div className="grid grid-cols-4 gap-6 w-full h-full">
           <Room name="Lobby" />
           <Room name="Meeting Room A" />
@@ -45,10 +65,17 @@ const LobbyView = () => {
           <Room name="Quiet Zone" />
           <Room name="Support Desk" />
         </div>
-        {users.map((user, index) => (
-          <UserAvatar key={index} name={user.name} position={user.position} />
+        {/* Render the current user's avatar with dynamic position */}
+        <UserAvatar
+          name="You"
+          style={{ top: `${userPosition.y}%`, left: `${userPosition.x}%`, transform: 'translate(-50%, -50%)' }}
+        />
+        {/* Render other users' avatars */}
+        {otherUsers.map((user, index) => (
+          <UserAvatar key={index} name={user.name} style={user.style} />
         ))}
       </div>
+      <p className="mt-4 text-sm text-gray-400">Click anywhere on the map to move your avatar!</p>
     </div>
   );
 };
