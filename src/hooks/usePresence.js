@@ -5,9 +5,13 @@ export const usePresence = (user, currentRoom) => {
   const [otherUsers, setOtherUsers] = useState([])
   const [userPosition, setUserPosition] = useState({ x: 50, y: 50 })
 
+  console.log('usePresence hook called', { user, currentRoom })
+
   // Update user's presence in database
   const updatePresence = async (position, room = currentRoom) => {
     if (!user) return
+
+    console.log('Updating presence in database:', { user: user.name, position, room })
 
     try {
       const { error } = await supabase
@@ -26,16 +30,18 @@ export const usePresence = (user, currentRoom) => {
       if (error) {
         console.error('Error updating presence:', error)
       } else {
-        console.log('Presence updated:', position)
+        console.log('✅ Presence updated successfully')
       }
     } catch (error) {
       console.error('Error updating presence:', error)
     }
   }
 
-  // Subscribe to other users' presence
+  // Load existing users and subscribe to changes
   useEffect(() => {
     if (!user) return
+
+    console.log('Setting up presence subscription for user:', user.name)
 
     // Load existing users
     const loadPresence = async () => {
@@ -48,17 +54,20 @@ export const usePresence = (user, currentRoom) => {
 
         if (error) throw error
         
+        console.log('Loaded existing presence data:', data)
+        
         const activeUsers = data.map(presence => ({
           id: presence.user_id,
           name: presence.username,
           room: presence.room_name,
           position: {
-            x: presence.position_x,
-            y: presence.position_y
+            x: presence.position_x || 50,
+            y: presence.position_y || 50
           },
           lastSeen: presence.last_seen
         }))
         
+        console.log('Setting other users:', activeUsers)
         setOtherUsers(activeUsers)
       } catch (error) {
         console.error('Error loading presence:', error)
@@ -69,17 +78,22 @@ export const usePresence = (user, currentRoom) => {
 
     // Set up real-time subscription
     const channel = supabase
-      .channel('user-presence')
+      .channel('user-presence-changes')
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
-          table: 'user_presence',
-          filter: `user_id=neq.${user.id}` // Exclude current user
+          table: 'user_presence'
         },
         (payload) => {
-          console.log('Presence change:', payload)
+          console.log('🔔 Presence change received:', payload)
+          
+          // Skip changes from current user
+          if (payload.new?.user_id === user.id || payload.old?.user_id === user.id) {
+            console.log('Skipping own presence change')
+            return
+          }
           
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
             const presence = payload.new
@@ -88,30 +102,36 @@ export const usePresence = (user, currentRoom) => {
               name: presence.username,
               room: presence.room_name,
               position: {
-                x: presence.position_x,
-                y: presence.position_y
+                x: presence.position_x || 50,
+                y: presence.position_y || 50
               },
               lastSeen: presence.last_seen
             }
 
+            console.log('Adding/updating user:', newUser)
             setOtherUsers(prev => {
               const filtered = prev.filter(u => u.id !== presence.user_id)
               return [...filtered, newUser]
             })
           } else if (payload.eventType === 'DELETE') {
+            console.log('Removing user:', payload.old.user_id)
             setOtherUsers(prev => prev.filter(u => u.id !== payload.old.user_id))
           }
         }
       )
-      .subscribe()
+      .subscribe((status) => {
+        console.log('Presence subscription status:', status)
+      })
 
     return () => {
+      console.log('Cleaning up presence subscription')
       supabase.removeChannel(channel)
     }
   }, [user])
 
-  // Update presence when position changes
+  // Update position locally and in database
   const updatePosition = (newPosition) => {
+    console.log('Position update requested:', newPosition)
     setUserPosition(newPosition)
     updatePresence(newPosition, currentRoom)
   }
@@ -119,15 +139,25 @@ export const usePresence = (user, currentRoom) => {
   // Update presence when room changes
   useEffect(() => {
     if (user) {
+      console.log('Room changed, updating presence:', { room: currentRoom, position: userPosition })
       updatePresence(userPosition, currentRoom)
     }
   }, [currentRoom, user])
 
-  // Update presence every 30 seconds (heartbeat)
+  // Initial presence update when user first loads
+  useEffect(() => {
+    if (user) {
+      console.log('Initial presence update for user:', user.name)
+      updatePresence(userPosition, currentRoom)
+    }
+  }, [user])
+
+  // Heartbeat - update presence every 30 seconds
   useEffect(() => {
     if (!user) return
 
     const interval = setInterval(() => {
+      console.log('Heartbeat: updating presence')
       updatePresence(userPosition, currentRoom)
     }, 30000) // 30 seconds
 
@@ -138,7 +168,7 @@ export const usePresence = (user, currentRoom) => {
   useEffect(() => {
     return () => {
       if (user) {
-        // Remove user from presence when they leave
+        console.log('Component unmounting, cleaning up presence for:', user.name)
         supabase
           .from('user_presence')
           .delete()
@@ -148,8 +178,21 @@ export const usePresence = (user, currentRoom) => {
     }
   }, [user])
 
+  // Filter users by current room
+  const visibleUsers = otherUsers.filter(otherUser => {
+    if (!currentRoom) return true // Show all users in lobby
+    return otherUser.room === currentRoom // Show only users in same room
+  })
+
+  console.log('usePresence returning:', { 
+    otherUsers: visibleUsers, 
+    userPosition, 
+    totalUsers: otherUsers.length,
+    visibleUsers: visibleUsers.length 
+  })
+
   return {
-    otherUsers,
+    otherUsers: visibleUsers,
     userPosition,
     updatePosition
   }
