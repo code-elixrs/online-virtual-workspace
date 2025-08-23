@@ -1,31 +1,29 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabaseClient'
+import { usernameService } from '../services/usernameService'
 
 export const usePresence = (user, currentRoom) => {
   const [otherUsers, setOtherUsers] = useState([])
   const [userPosition, setUserPosition] = useState({ x: 50, y: 50 })
+  const heartbeatIntervalRef = useRef(null)
+  const cleanupIntervalRef = useRef(null)
 
   console.log('usePresence hook called', { user, currentRoom })
 
   // Update user's presence in database
   const updatePresence = async (position, room = currentRoom) => {
-    if (!user) return
-
-    console.log('Updating presence in database:', { user: user.name, position, room })
+    if (!user?.sessionId) return
 
     try {
       const { error } = await supabase
         .from('user_presence')
-        .upsert({
-          user_id: user.id,
-          username: user.name,
+        .update({
           room_name: room,
           position_x: position.x,
           position_y: position.y,
           last_seen: new Date().toISOString()
-        }, {
-          onConflict: 'user_id'
         })
+        .eq('session_id', user.sessionId)
 
       if (error) {
         console.error('Error updating presence:', error)
@@ -39,25 +37,28 @@ export const usePresence = (user, currentRoom) => {
 
   // Load existing users and subscribe to changes
   useEffect(() => {
-    if (!user) return
+    if (!user?.sessionId) return
 
     console.log('Setting up presence subscription for user:', user.name)
 
     // Load existing users
     const loadPresence = async () => {
       try {
+        // Cleanup stale sessions first
+        await usernameService.cleanupStaleSessions()
+
+        // Load all active users except current user
         const { data, error } = await supabase
           .from('user_presence')
           .select('*')
-          .neq('user_id', user.id) // Exclude current user
-          .gte('last_seen', new Date(Date.now() - 5 * 60 * 1000).toISOString()) // Active in last 5 minutes
+          .neq('session_id', user.sessionId)
 
         if (error) throw error
         
         console.log('Loaded existing presence data:', data)
         
         const activeUsers = data.map(presence => ({
-          id: presence.user_id,
+          id: presence.session_id,
           name: presence.username,
           room: presence.room_name,
           position: {
@@ -76,9 +77,14 @@ export const usePresence = (user, currentRoom) => {
 
     loadPresence()
 
+    // Set up cleanup interval (every 10 seconds)
+    cleanupIntervalRef.current = setInterval(async () => {
+      await usernameService.cleanupStaleSessions()
+    }, 10000)
+
     // Set up real-time subscription
     const channel = supabase
-      .channel('user-presence-changes')
+      .channel('user-presence-live')
       .on(
         'postgres_changes',
         {
@@ -90,7 +96,7 @@ export const usePresence = (user, currentRoom) => {
           console.log('🔔 Presence change received:', payload)
           
           // Skip changes from current user
-          if (payload.new?.user_id === user.id || payload.old?.user_id === user.id) {
+          if (payload.new?.session_id === user.sessionId || payload.old?.session_id === user.sessionId) {
             console.log('Skipping own presence change')
             return
           }
@@ -98,7 +104,7 @@ export const usePresence = (user, currentRoom) => {
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
             const presence = payload.new
             const newUser = {
-              id: presence.user_id,
+              id: presence.session_id,
               name: presence.username,
               room: presence.room_name,
               position: {
@@ -110,12 +116,12 @@ export const usePresence = (user, currentRoom) => {
 
             console.log('Adding/updating user:', newUser)
             setOtherUsers(prev => {
-              const filtered = prev.filter(u => u.id !== presence.user_id)
+              const filtered = prev.filter(u => u.id !== presence.session_id)
               return [...filtered, newUser]
             })
           } else if (payload.eventType === 'DELETE') {
-            console.log('Removing user:', payload.old.user_id)
-            setOtherUsers(prev => prev.filter(u => u.id !== payload.old.user_id))
+            console.log('Removing user:', payload.old.session_id)
+            setOtherUsers(prev => prev.filter(u => u.id !== payload.old.session_id))
           }
         }
       )
@@ -125,6 +131,9 @@ export const usePresence = (user, currentRoom) => {
 
     return () => {
       console.log('Cleaning up presence subscription')
+      if (cleanupIntervalRef.current) {
+        clearInterval(cleanupIntervalRef.current)
+      }
       supabase.removeChannel(channel)
     }
   }, [user])
@@ -138,61 +147,49 @@ export const usePresence = (user, currentRoom) => {
 
   // Update presence when room changes
   useEffect(() => {
-    if (user) {
+    if (user?.sessionId) {
       console.log('Room changed, updating presence:', { room: currentRoom, position: userPosition })
       updatePresence(userPosition, currentRoom)
     }
   }, [currentRoom, user])
 
-  // Initial presence update when user first loads
+  // Heartbeat - update presence every 10 seconds
   useEffect(() => {
-    if (user) {
-      console.log('Initial presence update for user:', user.name)
-      updatePresence(userPosition, currentRoom)
-    }
-  }, [user])
+    if (!user?.sessionId) return
 
-  // Heartbeat - update presence every 30 seconds
-  useEffect(() => {
-    if (!user) return
-
-    const interval = setInterval(() => {
+    heartbeatIntervalRef.current = setInterval(() => {
       console.log('Heartbeat: updating presence')
       updatePresence(userPosition, currentRoom)
-    }, 30000) // 30 seconds
+    }, 10000) // 10 seconds
 
-    return () => clearInterval(interval)
+    return () => {
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current)
+      }
+    }
   }, [user, userPosition, currentRoom])
 
-  // Cleanup on unmount
+  // Cleanup on page unload/refresh
   useEffect(() => {
-    return () => {
-      if (user) {
-        console.log('Component unmounting, cleaning up presence for:', user.name)
-        supabase
-          .from('user_presence')
-          .delete()
-          .eq('user_id', user.id)
-          .then(() => console.log('Presence cleaned up'))
+    const cleanup = async () => {
+      if (user?.sessionId) {
+        console.log('Page unloading, cleaning up session:', user.sessionId)
+        await usernameService.removeSession(user.sessionId)
       }
+    }
+
+    window.addEventListener('beforeunload', cleanup)
+    window.addEventListener('unload', cleanup)
+
+    return () => {
+      window.removeEventListener('beforeunload', cleanup)
+      window.removeEventListener('unload', cleanup)
+      cleanup()
     }
   }, [user])
 
-  // Filter users by current room
-  const visibleUsers = otherUsers.filter(otherUser => {
-    if (!currentRoom) return true // Show all users in lobby
-    return otherUser.room === currentRoom // Show only users in same room
-  })
-
-  console.log('usePresence returning:', { 
-    otherUsers: visibleUsers, 
-    userPosition, 
-    totalUsers: otherUsers.length,
-    visibleUsers: visibleUsers.length 
-  })
-
   return {
-    otherUsers: visibleUsers,
+    otherUsers,
     userPosition,
     updatePosition
   }

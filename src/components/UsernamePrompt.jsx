@@ -1,25 +1,45 @@
 import React, { useState } from 'react'
+import { usernameService } from '../services/usernameService'
 
 const UsernamePrompt = ({ onUsernameSet }) => {
   const [username, setUsername] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState('')
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (username.trim().length < 2) {
-      alert('Username must be at least 2 characters')
+      setError('Username must be at least 2 characters')
       return
     }
     
     setIsLoading(true)
-    // Generate a unique user ID
-    const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    setError('')
     
     try {
-      await onUsernameSet(username.trim(), userId)
+      // Check if username is available
+      const { available, existingSession } = await usernameService.isUsernameAvailable(username.trim())
+      
+      if (!available && existingSession) {
+        setError(`Username "${username}" is already taken by an active user. Please choose another name.`)
+        setIsLoading(false)
+        return
+      }
+      
+      // Generate unique session ID
+      const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      
+      // Claim the username
+      const result = await usernameService.claimUsername(username.trim(), sessionId)
+      
+      if (result.success) {
+        await onUsernameSet(username.trim(), sessionId)
+      } else {
+        setError('Failed to join. Please try again.')
+      }
     } catch (error) {
       console.error('Error setting username:', error)
-      alert('Failed to set username. Please try again.')
+      setError('Failed to join. Please try again.')
     } finally {
       setIsLoading(false)
     }
@@ -39,25 +59,34 @@ const UsernamePrompt = ({ onUsernameSet }) => {
             <input
               type="text"
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(e) => {
+                setUsername(e.target.value)
+                setError('') // Clear error when typing
+              }}
               placeholder="Enter your username..."
               className="w-full p-3 bg-gray-700 text-white rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none"
               maxLength={20}
               disabled={isLoading}
               autoFocus
             />
+            {error && (
+              <p className="text-red-400 text-sm mt-2">{error}</p>
+            )}
           </div>
           <button
             type="submit"
             disabled={isLoading || username.trim().length < 2}
             className="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
           >
-            {isLoading ? 'Connecting...' : 'Enter Virtual Office'}
+            {isLoading ? 'Checking availability...' : 'Enter Virtual Office'}
           </button>
         </form>
+        <div className="mt-4 text-xs text-gray-400 text-center">
+          Note: Only one session per username is allowed
+        </div>
       </div>
     </div>
   )
 }
 
-export default UsernamePrompt
+export default UsernamePrompt;
