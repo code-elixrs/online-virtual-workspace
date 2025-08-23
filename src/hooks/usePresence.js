@@ -5,86 +5,86 @@ import { usernameService } from '../services/usernameService'
 export const usePresence = (user, currentRoom) => {
   const [otherUsers, setOtherUsers] = useState([])
   const [userPosition, setUserPosition] = useState({ x: 50, y: 50 })
-  const heartbeatIntervalRef = useRef(null)
-  const cleanupIntervalRef = useRef(null)
+  const [isInitialized, setIsInitialized] = useState(false)
+  const heartbeatRef = useRef(null)
+  const cleanupRef = useRef(null)
 
-  console.log('usePresence hook called', { user, currentRoom })
+  console.log('🔥 usePresence called:', { 
+    user: user?.name, 
+    sessionId: user?.sessionId,
+    currentRoom,
+    isInitialized 
+  })
 
-  // Update user's presence in database
-  const updatePresence = async (position, room = currentRoom) => {
-    if (!user?.sessionId) return
-
-    try {
-      const { error } = await supabase
-        .from('user_presence')
-        .update({
-          room_name: room,
-          position_x: position.x,
-          position_y: position.y,
-          last_seen: new Date().toISOString()
-        })
-        .eq('session_id', user.sessionId)
-
-      if (error) {
-        console.error('Error updating presence:', error)
-      } else {
-        console.log('✅ Presence updated successfully')
-      }
-    } catch (error) {
-      console.error('Error updating presence:', error)
-    }
-  }
-
-  // Load existing users and subscribe to changes
+  // Initialize user presence when user first loads
   useEffect(() => {
-    if (!user?.sessionId) return
+    if (!user?.sessionId || isInitialized) return
 
-    console.log('Setting up presence subscription for user:', user.name)
+    const initializePresence = async () => {
+      console.log('🚀 Initializing presence for:', user.name)
+      
+      // Create initial presence record
+      const result = await usernameService.createUserSession(
+        user.name, 
+        user.sessionId, 
+        userPosition, 
+        currentRoom
+      )
+      
+      if (result.success) {
+        console.log('✅ Presence initialized successfully')
+        setIsInitialized(true)
+      } else {
+        console.error('❌ Failed to initialize presence:', result.error)
+      }
+    }
 
-    // Load existing users
-    const loadPresence = async () => {
+    initializePresence()
+  }, [user, isInitialized])
+
+  // Load other users and set up real-time subscription
+  useEffect(() => {
+    if (!user?.sessionId || !isInitialized) return
+
+    console.log('📡 Setting up presence subscription')
+
+    const loadOtherUsers = async () => {
       try {
-        // Cleanup stale sessions first
-        await usernameService.cleanupStaleSessions()
+        // Clean up inactive sessions first
+        await usernameService.cleanupInactiveSessions()
 
-        // Load all active users except current user
+        // Load all other active users
         const { data, error } = await supabase
           .from('user_presence')
           .select('*')
           .neq('session_id', user.sessionId)
 
-        if (error) throw error
-        
-        console.log('Loaded existing presence data:', data)
-        
-        const activeUsers = data.map(presence => ({
-          id: presence.session_id,
-          name: presence.username,
-          room: presence.room_name,
-          position: {
-            x: presence.position_x || 50,
-            y: presence.position_y || 50
-          },
-          lastSeen: presence.last_seen
+        if (error) {
+          console.error('❌ Error loading other users:', error)
+          return
+        }
+
+        console.log('📥 Loaded other users:', data)
+
+        const users = data.map(row => ({
+          id: row.session_id,
+          name: row.username,
+          room: row.room_name,
+          position: { x: row.position_x || 50, y: row.position_y || 50 },
+          lastSeen: row.last_seen
         }))
-        
-        console.log('Setting other users:', activeUsers)
-        setOtherUsers(activeUsers)
+
+        setOtherUsers(users)
       } catch (error) {
-        console.error('Error loading presence:', error)
+        console.error('❌ Exception loading other users:', error)
       }
     }
 
-    loadPresence()
-
-    // Set up cleanup interval (every 10 seconds)
-    cleanupIntervalRef.current = setInterval(async () => {
-      await usernameService.cleanupStaleSessions()
-    }, 10000)
+    loadOtherUsers()
 
     // Set up real-time subscription
     const channel = supabase
-      .channel('user-presence-live')
+      .channel('presence-updates')
       .on(
         'postgres_changes',
         {
@@ -93,104 +93,111 @@ export const usePresence = (user, currentRoom) => {
           table: 'user_presence'
         },
         (payload) => {
-          console.log('🔔 Presence change received:', payload)
-          
-          // Skip changes from current user
-          if (payload.new?.session_id === user.sessionId || payload.old?.session_id === user.sessionId) {
-            console.log('Skipping own presence change')
+          console.log('🔔 Real-time update:', payload)
+
+          // Skip our own changes
+          if (payload.new?.session_id === user.sessionId || 
+              payload.old?.session_id === user.sessionId) {
+            console.log('⏭️ Skipping own change')
             return
           }
-          
+
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            const presence = payload.new
+            const userData = payload.new
             const newUser = {
-              id: presence.session_id,
-              name: presence.username,
-              room: presence.room_name,
-              position: {
-                x: presence.position_x || 50,
-                y: presence.position_y || 50
-              },
-              lastSeen: presence.last_seen
+              id: userData.session_id,
+              name: userData.username,
+              room: userData.room_name,
+              position: { x: userData.position_x || 50, y: userData.position_y || 50 },
+              lastSeen: userData.last_seen
             }
 
-            console.log('Adding/updating user:', newUser)
+            console.log('👤 Adding/updating user:', newUser)
             setOtherUsers(prev => {
-              const filtered = prev.filter(u => u.id !== presence.session_id)
+              const filtered = prev.filter(u => u.id !== userData.session_id)
               return [...filtered, newUser]
             })
           } else if (payload.eventType === 'DELETE') {
-            console.log('Removing user:', payload.old.session_id)
-            setOtherUsers(prev => prev.filter(u => u.id !== payload.old.session_id))
+            const sessionId = payload.old.session_id
+            console.log('👤 Removing user:', sessionId)
+            setOtherUsers(prev => prev.filter(u => u.id !== sessionId))
           }
         }
       )
-      .subscribe((status) => {
-        console.log('Presence subscription status:', status)
+      .subscribe(status => {
+        console.log('📡 Subscription status:', status)
       })
 
-    return () => {
-      console.log('Cleaning up presence subscription')
-      if (cleanupIntervalRef.current) {
-        clearInterval(cleanupIntervalRef.current)
-      }
-      supabase.removeChannel(channel)
-    }
-  }, [user])
+    // Set up periodic cleanup
+    cleanupRef.current = setInterval(() => {
+      usernameService.cleanupInactiveSessions()
+    }, 30000) // Every 30 seconds
 
-  // Update position locally and in database
-  const updatePosition = (newPosition) => {
-    console.log('Position update requested:', newPosition)
+    return () => {
+      console.log('🧹 Cleaning up subscription')
+      supabase.removeChannel(channel)
+      if (cleanupRef.current) {
+        clearInterval(cleanupRef.current)
+      }
+    }
+  }, [user, isInitialized])
+
+  // Update position in database
+  const updatePosition = async (newPosition) => {
+    console.log('📍 Updating position:', newPosition)
     setUserPosition(newPosition)
-    updatePresence(newPosition, currentRoom)
+
+    if (user?.sessionId && isInitialized) {
+      await usernameService.updateUserSession(user.sessionId, newPosition, currentRoom)
+    }
   }
 
-  // Update presence when room changes
+  // Update room when it changes
   useEffect(() => {
-    if (user?.sessionId) {
-      console.log('Room changed, updating presence:', { room: currentRoom, position: userPosition })
-      updatePresence(userPosition, currentRoom)
+    if (user?.sessionId && isInitialized) {
+      console.log('🏠 Room changed, updating:', currentRoom)
+      usernameService.updateUserSession(user.sessionId, userPosition, currentRoom)
     }
-  }, [currentRoom, user])
+  }, [currentRoom, user, isInitialized])
 
-  // Heartbeat - update presence every 10 seconds
+  // Heartbeat to keep session alive
   useEffect(() => {
-    if (!user?.sessionId) return
+    if (!user?.sessionId || !isInitialized) return
 
-    heartbeatIntervalRef.current = setInterval(() => {
-      console.log('Heartbeat: updating presence')
-      updatePresence(userPosition, currentRoom)
-    }, 10000) // 10 seconds
+    console.log('💓 Starting heartbeat')
+    heartbeatRef.current = setInterval(() => {
+      console.log('💓 Heartbeat update')
+      usernameService.updateUserSession(user.sessionId, userPosition, currentRoom)
+    }, 15000) // Every 15 seconds
 
     return () => {
-      if (heartbeatIntervalRef.current) {
-        clearInterval(heartbeatIntervalRef.current)
+      if (heartbeatRef.current) {
+        console.log('💓 Stopping heartbeat')
+        clearInterval(heartbeatRef.current)
       }
     }
-  }, [user, userPosition, currentRoom])
+  }, [user, isInitialized, userPosition, currentRoom])
 
-  // Cleanup on page unload/refresh
+  // Cleanup on unmount
   useEffect(() => {
-    const cleanup = async () => {
+    return () => {
       if (user?.sessionId) {
-        console.log('Page unloading, cleaning up session:', user.sessionId)
-        await usernameService.removeSession(user.sessionId)
+        console.log('🔚 Component unmounting, cleaning up')
+        usernameService.removeSession(user.sessionId)
       }
-    }
-
-    window.addEventListener('beforeunload', cleanup)
-    window.addEventListener('unload', cleanup)
-
-    return () => {
-      window.removeEventListener('beforeunload', cleanup)
-      window.removeEventListener('unload', cleanup)
-      cleanup()
     }
   }, [user])
+
+  console.log('🎯 usePresence returning:', { 
+    otherUsers: otherUsers.length, 
+    initialized: isInitialized,
+    usersList: otherUsers.map(u => u.name)
+  })
 
   return {
     otherUsers,
     userPosition,
-    updatePosition
+    updatePosition,
+    isInitialized
   }
 }

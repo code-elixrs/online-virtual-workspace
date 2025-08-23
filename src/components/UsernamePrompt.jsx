@@ -17,6 +17,8 @@ const UsernamePrompt = ({ onUsernameSet }) => {
     setError('')
     
     try {
+      console.log('👤 Attempting to join as:', username.trim())
+      
       // Check if username is available
       const { available, existingSession } = await usernameService.isUsernameAvailable(username.trim())
       
@@ -28,17 +30,15 @@ const UsernamePrompt = ({ onUsernameSet }) => {
       
       // Generate unique session ID
       const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      console.log('🎯 Generated session ID:', sessionId)
       
-      // Claim the username
-      const result = await usernameService.claimUsername(username.trim(), sessionId)
+      // The actual user session will be created by usePresence hook
+      // Just pass the username and sessionId to the parent
+      await onUsernameSet(username.trim(), sessionId)
       
-      if (result.success) {
-        await onUsernameSet(username.trim(), sessionId)
-      } else {
-        setError('Failed to join. Please try again.')
-      }
+      console.log('✅ Username set successfully')
     } catch (error) {
-      console.error('Error setting username:', error)
+      console.error('❌ Error setting username:', error)
       setError('Failed to join. Please try again.')
     } finally {
       setIsLoading(false)
@@ -78,7 +78,7 @@ const UsernamePrompt = ({ onUsernameSet }) => {
             disabled={isLoading || username.trim().length < 2}
             className="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
           >
-            {isLoading ? 'Checking availability...' : 'Enter Virtual Office'}
+            {isLoading ? 'Joining...' : 'Enter Virtual Office'}
           </button>
         </form>
         <div className="mt-4 text-xs text-gray-400 text-center">
