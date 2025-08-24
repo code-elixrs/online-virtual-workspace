@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabaseClient'
 import { usernameService } from '../services/usernameService'
+import { tabManager } from '../utils/tabManager'
 
 export const usePresence = (user, currentRoom) => {
   const [otherUsers, setOtherUsers] = useState([])
@@ -16,7 +17,16 @@ export const usePresence = (user, currentRoom) => {
     isInitialized 
   })
 
-  // Initialize user presence when user first loads
+  // Restore saved position on mount
+  useEffect(() => {
+    const savedSession = tabManager.getSavedSession()
+    if (savedSession && savedSession.position) {
+      console.log('📍 Restoring saved position:', savedSession.position)
+      setUserPosition(savedSession.position)
+    }
+  }, [])
+
+  // Initialize user presence when user first loads - NO ROOM DEPENDENCY
   useEffect(() => {
     if (!user?.sessionId || isInitialized) return
 
@@ -40,20 +50,20 @@ export const usePresence = (user, currentRoom) => {
     }
 
     initializePresence()
-  }, [user, isInitialized])
+  }, [user, isInitialized]) // REMOVED currentRoom dependency
 
-  // Load other users and set up real-time subscription
+  // Load other users and set up real-time subscription - ONLY DEPENDS ON USER
   useEffect(() => {
     if (!user?.sessionId || !isInitialized) return
 
-    console.log('📡 Setting up presence subscription')
+    console.log('📡 Setting up presence subscription (ONE TIME)')
 
     const loadOtherUsers = async () => {
       try {
         // Clean up inactive sessions first
         await usernameService.cleanupInactiveSessions()
 
-        // Load all other active users
+        // Load all other active users - NO ROOM FILTERING
         const { data, error } = await supabase
           .from('user_presence')
           .select('*')
@@ -82,9 +92,9 @@ export const usePresence = (user, currentRoom) => {
 
     loadOtherUsers()
 
-    // Set up real-time subscription
+    // Set up real-time subscription - ONE TIME ONLY
     const channel = supabase
-      .channel('presence-updates')
+      .channel(`presence-global-${user.sessionId}`) // Unique channel name
       .on(
         'postgres_changes',
         {
@@ -115,12 +125,20 @@ export const usePresence = (user, currentRoom) => {
             console.log('👤 Adding/updating user:', newUser)
             setOtherUsers(prev => {
               const filtered = prev.filter(u => u.id !== userData.session_id)
-              return [...filtered, newUser]
+              const newList = [...filtered, newUser]
+              console.log('👥 Updated user list:', newList.map(u => u.name))
+              return newList
             })
           } else if (payload.eventType === 'DELETE') {
-            const sessionId = payload.old.session_id
+            const sessionId = payload.old?.session_id
             console.log('👤 Removing user:', sessionId)
-            setOtherUsers(prev => prev.filter(u => u.id !== sessionId))
+            if (sessionId) {
+              setOtherUsers(prev => {
+                const newList = prev.filter(u => u.id !== sessionId)
+                console.log('👥 Updated user list after removal:', newList.map(u => u.name))
+                return newList
+              })
+            }
           }
         }
       )
@@ -130,6 +148,7 @@ export const usePresence = (user, currentRoom) => {
 
     // Set up periodic cleanup
     cleanupRef.current = setInterval(() => {
+      console.log('🧹 Running periodic cleanup')
       usernameService.cleanupInactiveSessions()
     }, 30000) // Every 30 seconds
 
@@ -140,25 +159,30 @@ export const usePresence = (user, currentRoom) => {
         clearInterval(cleanupRef.current)
       }
     }
-  }, [user, isInitialized])
+  }, [user, isInitialized]) // REMOVED currentRoom dependency - subscription stays stable
 
-  // Update position in database
+  // Update position in database and localStorage
   const updatePosition = async (newPosition) => {
     console.log('📍 Updating position:', newPosition)
     setUserPosition(newPosition)
+
+    // Save to localStorage immediately
+    tabManager.updateSession(newPosition, currentRoom)
 
     if (user?.sessionId && isInitialized) {
       await usernameService.updateUserSession(user.sessionId, newPosition, currentRoom)
     }
   }
 
-  // Update room when it changes
+  // Update ONLY room when it changes (position stays same)
   useEffect(() => {
     if (user?.sessionId && isInitialized) {
-      console.log('🏠 Room changed, updating:', currentRoom)
+      console.log('🏠 Room changed, updating room only:', currentRoom)
+      // Update room but keep current position
       usernameService.updateUserSession(user.sessionId, userPosition, currentRoom)
+      tabManager.updateSession(userPosition, currentRoom)
     }
-  }, [currentRoom, user, isInitialized])
+  }, [currentRoom]) // SEPARATE effect for room changes only
 
   // Heartbeat to keep session alive
   useEffect(() => {
@@ -176,7 +200,7 @@ export const usePresence = (user, currentRoom) => {
         clearInterval(heartbeatRef.current)
       }
     }
-  }, [user, isInitialized, userPosition, currentRoom])
+  }, [user, isInitialized]) // REMOVED userPosition and currentRoom to prevent restarts
 
   // Cleanup on unmount
   useEffect(() => {
@@ -191,7 +215,7 @@ export const usePresence = (user, currentRoom) => {
   console.log('🎯 usePresence returning:', { 
     otherUsers: otherUsers.length, 
     initialized: isInitialized,
-    usersList: otherUsers.map(u => u.name)
+    usersList: otherUsers.map(u => `${u.name}(${u.room || 'lobby'})`)
   })
 
   return {

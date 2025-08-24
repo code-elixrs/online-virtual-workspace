@@ -1,4 +1,3 @@
-import React, { useState, useEffect } from 'react';
 import Room from './Room';
 import UserAvatar from './UserAvatar.jsx';
 import { usePresence } from '../hooks/usePresence.js';
@@ -21,16 +20,25 @@ const LobbyView = ({ onJoinRoom, user, currentRoom, onSignout }) => {
   };
 
   // Filter users based on lobby vs room view
-  const visibleUsers = currentRoom 
-    ? otherUsers.filter(otherUser => otherUser.room === currentRoom)
-    : otherUsers;
+//   const visibleUsers = currentRoom 
+//     ? otherUsers.filter(otherUser => otherUser.room === currentRoom)
+//     : otherUsers;
 
-  console.log('Visible users calculation:', {
-    currentRoom,
-    totalOtherUsers: otherUsers.length,
-    visibleUsers: visibleUsers.length,
-    visibleUsersList: visibleUsers.map(u => ({ name: u.name, room: u.room }))
-  });
+//   console.log('Visible users calculation:', {
+//     currentRoom,
+//     totalOtherUsers: otherUsers.length,
+//     visibleUsers: visibleUsers.length,
+//     visibleUsersList: visibleUsers.map(u => ({ name: u.name, room: u.room }))
+//   });
+    const visibleUsers = otherUsers;
+
+    console.log('Visible users calculation:', {
+        currentRoom,
+        totalOtherUsers: otherUsers.length,
+        visibleUsers: visibleUsers.length,
+        visibleUsersList: visibleUsers.map(u => ({ name: u.name, room: u.room })),
+        message: 'SHOWING ALL USERS REGARDLESS OF ROOM'
+    });
 
   return (
     <div className="h-full flex flex-col p-8 md:p-16">
