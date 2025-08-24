@@ -1,19 +1,24 @@
-import React, { useState } from 'react'
+import React from 'react'
+import { useWebRTC } from '../hooks/useWebRTC'
 
 const RoomControls = ({ roomName, onLeaveRoom, onToggleChat, isChatOpen, user }) => {
-  const [isMicOn, setIsMicOn] = useState(false)
-  const [isVideoOn, setIsVideoOn] = useState(false)
+  const {
+    isInitialized,
+    isVideoEnabled,
+    isAudioEnabled,
+    toggleVideo,
+    toggleAudio,
+    error
+  } = useWebRTC(user, roomName)
 
   const handleToggleMic = () => {
-    setIsMicOn(!isMicOn)
-    // TODO: Implement actual mic control in Task 3.3
-    console.log(`Microphone ${!isMicOn ? 'enabled' : 'disabled'}`)
+    const enabled = toggleAudio()
+    console.log(`🎤 Microphone ${enabled ? 'enabled' : 'disabled'}`)
   }
 
   const handleToggleVideo = () => {
-    setIsVideoOn(!isVideoOn)
-    // TODO: Implement actual video control in Task 3.3
-    console.log(`Video ${!isVideoOn ? 'enabled' : 'disabled'}`)
+    const enabled = toggleVideo()
+    console.log(`📹 Video ${enabled ? 'enabled' : 'disabled'}`)
   }
 
   return (
@@ -22,10 +27,16 @@ const RoomControls = ({ roomName, onLeaveRoom, onToggleChat, isChatOpen, user })
         {/* Room Info */}
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+            <div className={`w-3 h-3 rounded-full animate-pulse ${
+              isInitialized ? 'bg-green-500' : 'bg-yellow-500'
+            }`}></div>
             <div>
               <h2 className="text-xl font-bold text-white">{roomName}</h2>
-              <p className="text-sm text-gray-400">Welcome, {user.name}</p>
+              <p className="text-sm text-gray-400">
+                Welcome, {user.name}
+                {error && <span className="text-red-400 ml-2">• {error}</span>}
+                {!isInitialized && !error && <span className="text-yellow-400 ml-2">• Connecting...</span>}
+              </p>
             </div>
           </div>
         </div>
@@ -35,20 +46,21 @@ const RoomControls = ({ roomName, onLeaveRoom, onToggleChat, isChatOpen, user })
           {/* Microphone */}
           <button
             onClick={handleToggleMic}
-            className={`p-3 rounded-full transition-all duration-200 ${
-              isMicOn 
+            disabled={!isInitialized}
+            className={`p-3 rounded-full transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
+              isAudioEnabled 
                 ? 'bg-green-600 hover:bg-green-700 text-white' 
                 : 'bg-red-600 hover:bg-red-700 text-white'
             }`}
-            title={isMicOn ? 'Disable Microphone' : 'Enable Microphone'}
+            title={isAudioEnabled ? 'Disable Microphone' : 'Enable Microphone'}
           >
-            {isMicOn ? (
+            {isAudioEnabled ? (
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M7 4a3 3 0 00-3 3v4a3 3 0 006 0V7a3 3 0 00-3-3zm-1 9a1 1 0 01-1-1V9a1 1 0 112 0v3a1 1 0 01-1 1zm8-1a1 1 0 10-2 0v1a3 3 0 01-3 3h-1a1 1 0 100 2h1a5 5 0 005-5v-1z" clipRule="evenodd" />
+                <path fillRule="evenodd" d="M7 4a3 3 0 616 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 715 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
               </svg>
             ) : (
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M2.293 2.293a1 1 0 011.414 0l14 14a1 1 0 01-1.414 1.414L14 15.414A5.002 5.002 0 015 16h-1a1 1 0 100 2h1a7.003 7.003 0 006.929-6.071L9.586 9.586A3 3 0 017 7V4a3 3 0 015.686-1.314L10 5.414V7a1 1 0 102 0V4a5 5 0 00-9.757-1.757L2.293 2.293z" clipRule="evenodd" />
+                <path fillRule="evenodd" d="M2.293 2.293a1 1 0 011.414 0L7 5.586V4a3 3 0 116 0v4c0 .657-.19 1.269-.515 1.786l1.48 1.48A7.001 7.001 0 0017 8a1 1 0 10-2 0 5.002 5.002 0 01-3.515 4.786L9.707 10.707A3.001 3.001 0 0113 8V4a1 1 0 00-2 0v4a1 1 0 01-1 1 .999.999 0 01-.707-.293L2.293 2.293a1 1 0 000 1.414z" clipRule="evenodd" />
               </svg>
             )}
           </button>
@@ -56,14 +68,15 @@ const RoomControls = ({ roomName, onLeaveRoom, onToggleChat, isChatOpen, user })
           {/* Video */}
           <button
             onClick={handleToggleVideo}
-            className={`p-3 rounded-full transition-all duration-200 ${
-              isVideoOn 
+            disabled={!isInitialized}
+            className={`p-3 rounded-full transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
+              isVideoEnabled 
                 ? 'bg-green-600 hover:bg-green-700 text-white' 
                 : 'bg-red-600 hover:bg-red-700 text-white'
             }`}
-            title={isVideoOn ? 'Disable Video' : 'Enable Video'}
+            title={isVideoEnabled ? 'Disable Video' : 'Enable Video'}
           >
-            {isVideoOn ? (
+            {isVideoEnabled ? (
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14m-12-3v5a2 2 0 002 2h8a2 2 0 002-2v-5a2 2 0 00-2-2H5a2 2 0 00-2 2z" />
               </svg>

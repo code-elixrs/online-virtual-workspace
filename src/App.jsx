@@ -7,12 +7,26 @@ import LobbyView from './components/LobbyView';
 import { tabManager } from './utils/tabManager';
 import { usernameService } from './services/usernameService';
 
+import VideoGrid from './components/VideoGrid';
+import { useWebRTC } from './hooks/useWebRTC';
+
 const App = () => {
   const [connectionStatus, setConnectionStatus] = useState('testing...');
   const [user, setUser] = useState(null);
   const [currentRoom, setCurrentRoom] = useState(null);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
+
+  // 🔧 FIXED: Move useWebRTC hook to TOP with other hooks
+  // This MUST be called unconditionally on every render
+  const { 
+    localStream, 
+    remoteStreams, 
+    isVideoEnabled, 
+    isAudioEnabled, 
+    toggleVideo, 
+    toggleAudio 
+  } = useWebRTC(user, currentRoom);
 
   // Test connection and restore session on app load
   useEffect(() => {
@@ -140,13 +154,29 @@ const App = () => {
       {/* Main Content Area */}
       <div className="flex-1 flex min-h-0">
         {/* Lobby View */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 flex flex-col">
           <LobbyView 
             onJoinRoom={handleJoinRoom}
             user={user}
             currentRoom={currentRoom}
             onSignout={handleSignout}
           />
+          
+          {/* Video Area - Show when in a room */}
+          {currentRoom && (
+            <div className="h-80 p-4 bg-gray-950">
+              <VideoGrid
+                localStream={localStream}
+                remoteStreams={remoteStreams}
+                currentUser={user}
+                isVideoEnabled={isVideoEnabled}
+                isAudioEnabled={isAudioEnabled}
+                onToggleVideo={toggleVideo}
+                onToggleAudio={toggleAudio}
+                className="h-full"
+              />
+            </div>
+          )}
         </div>
         
         {/* Chat Panel */}
