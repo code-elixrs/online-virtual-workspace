@@ -51,11 +51,14 @@ export const tabManager = {
   getSavedPosition() {
     try {
       const saved = localStorage.getItem(this.POSITION_KEY);
-      if (!saved) return { x: 50, y: 50 }; // Default position
+      if (!saved) {
+        console.log('📍 No saved position, using default');
+        return { x: 50, y: 50 }; // Default position
+      }
       
       const data = JSON.parse(saved);
       // Position is always valid regardless of age
-      console.log('📍 Position restored:', data.position);
+      console.log('📍 Position restored from localStorage:', data.position);
       return data.position;
     } catch (error) {
       console.error('Error getting saved position:', error);

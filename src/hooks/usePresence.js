@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../supabaseClient'
 import { usernameService } from '../services/usernameService'
 import { tabManager } from '../utils/tabManager'
@@ -7,50 +7,65 @@ export const usePresence = (user, currentRoom) => {
   const [otherUsers, setOtherUsers] = useState([])
   const [userPosition, setUserPosition] = useState({ x: 50, y: 50 })
   const [isInitialized, setIsInitialized] = useState(false)
+  
+  // Use refs to track current values for heartbeat
+  const currentPositionRef = useRef(userPosition)
+  const currentRoomRef = useRef(currentRoom)
   const heartbeatRef = useRef(null)
   const cleanupRef = useRef(null)
+
+  // Update refs when values change
+  useEffect(() => {
+    currentPositionRef.current = userPosition
+  }, [userPosition])
+
+  useEffect(() => {
+    currentRoomRef.current = currentRoom
+  }, [currentRoom])
 
   console.log('🔥 usePresence called:', { 
     user: user?.name, 
     sessionId: user?.sessionId,
     currentRoom,
-    isInitialized 
+    isInitialized,
+    position: userPosition
   })
 
-  // Restore saved position on mount
+  // Restore saved position on mount BEFORE user initialization
   useEffect(() => {
-    const savedSession = tabManager.getSavedSession()
-    if (savedSession && savedSession.position) {
-      console.log('📍 Restoring saved position:', savedSession.position)
-      setUserPosition(savedSession.position)
-    }
+    const savedPosition = tabManager.getSavedPosition()
+    console.log('📍 Restoring position on mount:', savedPosition)
+    setUserPosition(savedPosition)
   }, [])
 
-  // Initialize user presence when user first loads - NO ROOM DEPENDENCY
+  // Initialize user presence when user first loads
   useEffect(() => {
     if (!user?.sessionId || isInitialized) return
 
     const initializePresence = async () => {
-      console.log('🚀 Initializing presence for:', user.name)
+      console.log('🚀 Initializing presence for:', user.name, 'at position:', userPosition)
       
-      // Create initial presence record
+      // Create initial presence record with current position
       const result = await usernameService.createUserSession(
         user.name, 
         user.sessionId, 
-        userPosition, 
+        userPosition, // Use current position state
         currentRoom
       )
       
       if (result.success) {
         console.log('✅ Presence initialized successfully')
         setIsInitialized(true)
+        
+        // Save session to localStorage
+        tabManager.saveUserSession(user, userPosition, currentRoom)
       } else {
         console.error('❌ Failed to initialize presence:', result.error)
       }
     }
 
     initializePresence()
-  }, [user, isInitialized]) // REMOVED currentRoom dependency
+  }, [user, userPosition, currentRoom, isInitialized])
 
   // Load other users and set up real-time subscription - ONLY DEPENDS ON USER
   useEffect(() => {
@@ -94,7 +109,7 @@ export const usePresence = (user, currentRoom) => {
 
     // Set up real-time subscription - ONE TIME ONLY
     const channel = supabase
-      .channel(`presence-global-${user.sessionId}`) // Unique channel name
+      .channel(`presence-global-${user.sessionId}`)
       .on(
         'postgres_changes',
         {
@@ -150,7 +165,7 @@ export const usePresence = (user, currentRoom) => {
     cleanupRef.current = setInterval(() => {
       console.log('🧹 Running periodic cleanup')
       usernameService.cleanupInactiveSessions()
-    }, 30000) // Every 30 seconds
+    }, 30000)
 
     return () => {
       console.log('🧹 Cleaning up subscription')
@@ -159,40 +174,22 @@ export const usePresence = (user, currentRoom) => {
         clearInterval(cleanupRef.current)
       }
     }
-  }, [user, isInitialized]) // REMOVED currentRoom dependency - subscription stays stable
+  }, [user, isInitialized])
 
-  // Update position in database and localStorage
-  const updatePosition = async (newPosition) => {
-    console.log('📍 Updating position:', newPosition)
-    setUserPosition(newPosition)
-
-    // Save to localStorage immediately
-    tabManager.updateSession(newPosition, currentRoom)
-
-    if (user?.sessionId && isInitialized) {
-      await usernameService.updateUserSession(user.sessionId, newPosition, currentRoom)
-    }
-  }
-
-  // Update ONLY room when it changes (position stays same)
-  useEffect(() => {
-    if (user?.sessionId && isInitialized) {
-      console.log('🏠 Room changed, updating room only:', currentRoom)
-      // Update room but keep current position
-      usernameService.updateUserSession(user.sessionId, userPosition, currentRoom)
-      tabManager.updateSession(userPosition, currentRoom)
-    }
-  }, [currentRoom]) // SEPARATE effect for room changes only
-
-  // Heartbeat to keep session alive
+  // Heartbeat with proper refs to avoid stale closure
   useEffect(() => {
     if (!user?.sessionId || !isInitialized) return
 
-    console.log('💓 Starting heartbeat')
-    heartbeatRef.current = setInterval(() => {
-      console.log('💓 Heartbeat update')
-      usernameService.updateUserSession(user.sessionId, userPosition, currentRoom)
-    }, 15000) // Every 15 seconds
+    console.log('💓 Starting heartbeat with refs')
+    
+    const heartbeatFunction = async () => {
+      const currentPos = currentPositionRef.current
+      const currentRm = currentRoomRef.current
+      console.log('💓 Heartbeat update:', { position: currentPos, room: currentRm })
+      await usernameService.updateUserSession(user.sessionId, currentPos, currentRm)
+    }
+
+    heartbeatRef.current = setInterval(heartbeatFunction, 15000)
 
     return () => {
       if (heartbeatRef.current) {
@@ -200,13 +197,45 @@ export const usePresence = (user, currentRoom) => {
         clearInterval(heartbeatRef.current)
       }
     }
-  }, [user, isInitialized]) // REMOVED userPosition and currentRoom to prevent restarts
+  }, [user, isInitialized])
 
-  // Cleanup on unmount
+  // Update position function
+  const updatePosition = useCallback(async (newPosition) => {
+    console.log('📍 Updating position:', newPosition)
+    setUserPosition(newPosition)
+
+    // Save to localStorage immediately
+    tabManager.savePosition(newPosition)
+
+    if (user?.sessionId && isInitialized) {
+      await usernameService.updateUserSession(user.sessionId, newPosition, currentRoom)
+      // Update session with new position
+      tabManager.updateSession(newPosition, currentRoom)
+    }
+  }, [user, isInitialized, currentRoom])
+
+  // Update ONLY room when it changes (position stays same)
+  useEffect(() => {
+    if (user?.sessionId && isInitialized) {
+      console.log('🏠 Room changed, updating room only:', currentRoom)
+      usernameService.updateUserSession(user.sessionId, userPosition, currentRoom)
+      tabManager.updateSession(userPosition, currentRoom)
+    }
+  }, [currentRoom, user, isInitialized, userPosition])
+
+  // Cleanup on unmount with explicit removal
   useEffect(() => {
     return () => {
       if (user?.sessionId) {
         console.log('🔚 Component unmounting, cleaning up')
+        // Clear heartbeat first
+        if (heartbeatRef.current) {
+          clearInterval(heartbeatRef.current)
+        }
+        if (cleanupRef.current) {
+          clearInterval(cleanupRef.current)
+        }
+        // Remove from database
         usernameService.removeSession(user.sessionId)
       }
     }
@@ -215,6 +244,7 @@ export const usePresence = (user, currentRoom) => {
   console.log('🎯 usePresence returning:', { 
     otherUsers: otherUsers.length, 
     initialized: isInitialized,
+    position: userPosition,
     usersList: otherUsers.map(u => `${u.name}(${u.room || 'lobby'})`)
   })
 

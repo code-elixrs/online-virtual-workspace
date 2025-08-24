@@ -10,20 +10,28 @@ const SignoutButton = ({ user, onSignout }) => {
     
     setIsSigningOut(true);
     try {
-      console.log('Signing out user:', user.name);
+      console.log('🚪 Signing out user:', user.name, user.sessionId);
       
-      // Remove from database
+      // Step 1: Remove from database (will trigger real-time removal for others)
       await usernameService.removeSession(user.sessionId);
+      console.log('✅ Removed from database');
       
-      // Clear local storage
+      // Step 2: Clear ALL local storage (including position)
       tabManager.clearSession();
+      console.log('✅ Cleared local storage');
       
-      // Notify parent component
+      // Step 3: Wait a moment for database update to propagate
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Step 4: Notify parent component to clear user state
       onSignout();
       
       console.log('✅ Signout complete');
     } catch (error) {
-      console.error('Error during signout:', error);
+      console.error('❌ Error during signout:', error);
+      // Still call onSignout even if there was an error
+      tabManager.clearSession();
+      onSignout();
     } finally {
       setIsSigningOut(false);
     }
@@ -34,7 +42,7 @@ const SignoutButton = ({ user, onSignout }) => {
       onClick={handleSignout}
       disabled={isSigningOut}
       className="flex items-center space-x-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:bg-gray-600"
-      title="Sign out"
+      title="Sign out and remove presence"
     >
       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>

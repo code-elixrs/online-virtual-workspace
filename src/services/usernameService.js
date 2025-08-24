@@ -6,13 +6,13 @@ export const usernameService = {
     try {
       console.log('🔍 Checking availability for username:', username)
       
-      // Look for any recent activity (last 1 minute)
-      const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString()
+      // Look for any recent activity (last 2 minutes for safety)
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString()
       const { data, error } = await supabase
         .from('user_presence')
         .select('*')
         .eq('username', username)
-        .gte('last_seen', oneMinuteAgo)
+        .gte('last_seen', twoMinutesAgo)
 
       if (error) {
         console.error('❌ Error checking availability:', error)
@@ -20,7 +20,7 @@ export const usernameService = {
       }
       
       const isAvailable = data.length === 0
-      console.log(`✅ Username "${username}" available:`, isAvailable)
+      console.log(`✅ Username "${username}" available:`, isAvailable, 'Existing sessions:', data.length)
       
       return { available: isAvailable, existingSession: data[0] }
     } catch (error) {
