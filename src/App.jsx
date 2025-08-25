@@ -17,16 +17,20 @@ const App = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
 
-  // 🔧 FIXED: Move useWebRTC hook to TOP with other hooks
-  // This MUST be called unconditionally on every render
+  // 🎥 WebRTC with lazy media initialization
   const { 
     localStream, 
     remoteStreams, 
     isVideoEnabled, 
     isAudioEnabled, 
     toggleVideo, 
-    toggleAudio 
-  } = useWebRTC(user, currentRoom);
+    toggleAudio,
+    isInitialized,
+    hasRequestedMedia, // New - tracks if we've asked for permissions
+    error: webrtcError
+  } = useWebRTC(user, currentRoom, {
+    lazyMedia: true // 🔑 Don't request media until user wants it
+  });
 
   // Test connection and restore session on app load
   useEffect(() => {
@@ -111,6 +115,24 @@ const App = () => {
     // tabManager.clearSession() is called by SignoutButton
   };
 
+  // 🎬 FIXED: Better VideoGrid visibility logic
+  const shouldShowVideoGrid = () => {
+    if (!currentRoom) return false;
+    
+    const hasLocalVideo = localStream && isVideoEnabled;
+    const hasRemoteVideo = remoteStreams.size > 0;
+    
+    console.log('🎬 VideoGrid visibility check:', { 
+      hasLocalVideo, 
+      hasRemoteVideo, 
+      remoteCount: remoteStreams.size,
+      localStreamExists: !!localStream,
+      isVideoEnabled 
+    });
+    
+    return hasLocalVideo || hasRemoteVideo;
+  };
+
   // Show loading while restoring session
   if (isRestoring) {
     return (
@@ -136,6 +158,13 @@ const App = () => {
       {/* Connection status */}
       <div className="bg-gray-800 text-white p-1 text-center text-xs flex-shrink-0">
         Supabase: {connectionStatus} • User: {user.name} • Session: {user.sessionId?.slice(-6)}
+        {webrtcError && <span className="text-red-400 ml-2">• WebRTC: {webrtcError}</span>}
+        {/* Debug info */}
+        {currentRoom && (
+          <span className="text-blue-400 ml-2">
+            • Remote: {remoteStreams.size} • LocalVideo: {isVideoEnabled ? '📹' : '❌'}
+          </span>
+        )}
       </div>
       
       {/* Room Controls (only show when in a room) */}
@@ -147,6 +176,14 @@ const App = () => {
             onToggleChat={handleToggleChat}
             isChatOpen={isChatOpen}
             user={user}
+            // 🎥 Pass WebRTC state and controls as props
+            isWebRTCInitialized={isInitialized}
+            isVideoEnabled={isVideoEnabled}
+            isAudioEnabled={isAudioEnabled}
+            onToggleVideo={toggleVideo}
+            onToggleAudio={toggleAudio}
+            webrtcError={webrtcError}
+            hasRequestedMedia={hasRequestedMedia}
           />
         </div>
       )}
@@ -162,9 +199,14 @@ const App = () => {
             onSignout={handleSignout}
           />
           
-          {/* Video Area - Show when in a room */}
-          {currentRoom && (
+          {/* Video Area - Show ONLY when there are active video streams */}
+          {shouldShowVideoGrid() && (
             <div className="h-80 p-4 bg-gray-950">
+              <div className="bg-gray-800 rounded-lg p-2 mb-2">
+                <div className="text-xs text-gray-400">
+                  🎬 Video Active - Local: {localStream && isVideoEnabled ? '📹' : '❌'} | Remote: {remoteStreams.size}
+                </div>
+              </div>
               <VideoGrid
                 localStream={localStream}
                 remoteStreams={remoteStreams}
