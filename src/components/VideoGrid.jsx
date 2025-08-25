@@ -17,63 +17,36 @@ const VideoGrid = ({
     user: currentUser?.name
   });
 
-  // Calculate grid layout based on participant count
-  const { gridCols, gridRows, participantCount } = useMemo(() => {
+  // Calculate grid layout
+  const { gridLayout, participantCount } = useMemo(() => {
     const totalParticipants = (localStream ? 1 : 0) + remoteStreams.size;
     
-    let cols, rows;
+    let gridCols = 'grid-cols-1';
+    let aspectClass = 'aspect-video';
     
     if (totalParticipants <= 1) {
-      cols = 1; rows = 1;
-    } else if (totalParticipants <= 2) {
-      cols = 2; rows = 1;
+      gridCols = 'grid-cols-1';
+      aspectClass = 'aspect-video';
+    } else if (totalParticipants === 2) {
+      gridCols = 'grid-cols-1 md:grid-cols-2';
+      aspectClass = 'aspect-video';
     } else if (totalParticipants <= 4) {
-      cols = 2; rows = 2;
+      gridCols = 'grid-cols-2';
+      aspectClass = 'aspect-video';
     } else if (totalParticipants <= 6) {
-      cols = 3; rows = 2;
-    } else if (totalParticipants <= 9) {
-      cols = 3; rows = 3;
-    } else if (totalParticipants <= 12) {
-      cols = 4; rows = 3;
+      gridCols = 'grid-cols-2 md:grid-cols-3';
+      aspectClass = 'aspect-video';
     } else {
-      // For larger groups, use a more dynamic approach
-      cols = Math.ceil(Math.sqrt(totalParticipants));
-      rows = Math.ceil(totalParticipants / cols);
+      gridCols = 'grid-cols-3 md:grid-cols-4';
+      aspectClass = 'aspect-video';
     }
     
     return {
-      gridCols: cols,
-      gridRows: rows,
+      gridLayout: `grid ${gridCols} gap-2 h-full w-full`,
+      aspectClass,
       participantCount: totalParticipants
     };
   }, [localStream, remoteStreams.size]);
-
-  // Generate grid CSS classes
-  const gridClasses = useMemo(() => {
-    const baseClass = "grid gap-2 h-full w-full";
-    const colsClass = `grid-cols-${gridCols}`;
-    
-    // For responsive design
-    let responsiveClasses = "";
-    if (gridCols > 2) {
-      responsiveClasses = "sm:grid-cols-2 md:grid-cols-" + Math.min(gridCols, 3) + " lg:grid-cols-" + gridCols;
-    } else {
-      responsiveClasses = colsClass;
-    }
-    
-    return `${baseClass} ${responsiveClasses}`;
-  }, [gridCols]);
-
-  // Calculate individual video feed size
-  const feedClasses = useMemo(() => {
-    if (participantCount === 1) {
-      return "aspect-video max-w-2xl mx-auto"; // Large single video
-    } else if (participantCount === 2) {
-      return "aspect-video"; // Two videos side by side
-    } else {
-      return "aspect-video min-h-32"; // Grid layout
-    }
-  }, [participantCount]);
 
   if (participantCount === 0) {
     return (
@@ -82,48 +55,51 @@ const VideoGrid = ({
           <div className="w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-4">
             <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14m-5-4v6a2 2 0 002 2h6a2 2 0 002-2v-6a2 2 0 00-2-2h-6a2 2 0 00-2 2z" />
-            </svg>
-          </div>
-          <div className="text-lg font-medium">No Video Streams</div>
-          <div className="text-sm">Camera access might be required</div>
-        </div>
-      </div>
-    );
-  }
+           </svg>
+         </div>
+         <div className="text-lg font-medium">No Video Streams</div>
+         <div className="text-sm">Click the camera button to start video</div>
+       </div>
+     </div>
+   );
+ }
 
-  return (
-    <div className={`${gridClasses} ${className}`}>
-      {/* Local Video Feed */}
-      {localStream && (
-        <VideoFeed
-          stream={localStream}
-          sessionId={currentUser?.sessionId}
-          userName={currentUser?.name || 'You'}
-          isLocal={true}
-          isVideoEnabled={isVideoEnabled}
-          isAudioEnabled={isAudioEnabled}
-          showControls={true}
-          onToggleVideo={onToggleVideo}
-          onToggleAudio={onToggleAudio}
-          className={feedClasses}
-        />
-      )}
-      
-      {/* Remote Video Feeds */}
-      {Array.from(remoteStreams.entries()).map(([sessionId, stream]) => (
-        <VideoFeed
-          key={sessionId}
-          stream={stream}
-          sessionId={sessionId}
-          userName={`User ${sessionId.slice(-4)}`} // You might want to get real names from presence
-          isLocal={false}
-          isVideoEnabled={true} // Remote video state - might need to track this
-          isAudioEnabled={true} // Remote audio state - might need to track this
-          className={feedClasses}
-        />
-      ))}
-    </div>
-  );
+ return (
+   <div className={`${gridLayout} ${className}`}>
+     {/* Local Video Feed */}
+     {localStream && (
+       <div className="min-h-0">
+         <VideoFeed
+           stream={localStream}
+           sessionId={currentUser?.sessionId}
+           userName={currentUser?.name || 'You'}
+           isLocal={true}
+           isVideoEnabled={isVideoEnabled}
+           isAudioEnabled={isAudioEnabled}
+           showControls={false} // Controls are in RoomControls now
+           onToggleVideo={onToggleVideo}
+           onToggleAudio={onToggleAudio}
+           className="h-full w-full"
+         />
+       </div>
+     )}
+     
+     {/* Remote Video Feeds */}
+     {Array.from(remoteStreams.entries()).map(([sessionId, stream]) => (
+       <div key={sessionId} className="min-h-0">
+         <VideoFeed
+           stream={stream}
+           sessionId={sessionId}
+           userName={`User ${sessionId.slice(-4)}`}
+           isLocal={false}
+           isVideoEnabled={true} // Remote streams are enabled if we receive them
+           isAudioEnabled={true}
+           className="h-full w-full"
+         />
+       </div>
+     ))}
+   </div>
+ );
 };
 
 export default VideoGrid;

@@ -8,19 +8,22 @@ export const useWebRTC = (user, currentRoom, options = {}) => {
   const [isInitialized, setIsInitialized] = useState(false)
   const [localStream, setLocalStream] = useState(null)
   const [remoteStreams, setRemoteStreams] = useState(new Map())
-  const [isVideoEnabled, setIsVideoEnabled] = useState(false) // 🔇 Always start disabled
-  const [isAudioEnabled, setIsAudioEnabled] = useState(false) // 🔇 Always start disabled
-  const [hasRequestedMedia, setHasRequestedMedia] = useState(false) // 📹 Track if we've requested permissions
+  const [isVideoEnabled, setIsVideoEnabled] = useState(false) // Always start disabled
+  const [isAudioEnabled, setIsAudioEnabled] = useState(false) // Always start disabled
+  const [hasRequestedMedia, setHasRequestedMedia] = useState(false)
   const [error, setError] = useState(null)
+  const [connectionStates, setConnectionStates] = useState(new Map()) // Track peer connection states
+  const [isConnecting, setIsConnecting] = useState(false)
   
   const webrtcServiceRef = useRef(null)
 
-  console.log('🎥 useWebRTC hook:', { 
+  console.log('🎥 useWebRTC:', { 
     user: user?.name, 
     room: currentRoom, 
-    lazyMedia,
+    isInitialized,
     hasRequestedMedia,
-    remoteStreamsCount: remoteStreams.size 
+    remoteCount: remoteStreams.size,
+    isConnecting
   })
 
   // Initialize WebRTC when entering a room
@@ -30,72 +33,72 @@ export const useWebRTC = (user, currentRoom, options = {}) => {
       return
     }
 
-    console.log('🚀 Initializing WebRTC for room:', currentRoom, 'lazyMedia:', lazyMedia)
+    console.log('🚀 Initializing WebRTC for room:', currentRoom)
+    setIsConnecting(true)
     initializeWebRTC()
 
-    return () => {
-      cleanup()
-    }
+    return cleanup
   }, [user, currentRoom])
 
   const initializeWebRTC = async () => {
     try {
       setError(null)
       
-      // Create WebRTC service with lazy media option
-      const service = new WebRTCService(user, currentRoom, { lazyMedia })
+      // Create WebRTC service
+      const service = new WebRTCService(user, currentRoom, { lazyMedia: true })
       
-      // Set up callbacks for remote streams
+      // Set up stream callbacks
       service.onStreamAdded = (sessionId, stream) => {
-        console.log('➕ Remote stream added:', sessionId)
-        setRemoteStreams(prev => {
-          const newMap = new Map(prev)
-          newMap.set(sessionId, stream)
-          console.log('📊 Total remote streams after add:', newMap.size)
-          return newMap
-        })
+        console.log('➕ Remote stream added:', sessionId.slice(-4))
+        setRemoteStreams(prev => new Map(prev.set(sessionId, stream)))
       }
       
       service.onStreamRemoved = (sessionId) => {
-        console.log('➖ Remote stream removed:', sessionId)
+        console.log('➖ Remote stream removed:', sessionId.slice(-4))
         setRemoteStreams(prev => {
           const newMap = new Map(prev)
           newMap.delete(sessionId)
-          console.log('📊 Total remote streams after remove:', newMap.size)
           return newMap
         })
       }
       
-      // Initialize service (without requesting media if lazyMedia = true)
+      // Set up connection state tracking
+      service.onConnectionStateChange = (sessionId, state) => {
+        console.log('🔌 Connection state change:', sessionId.slice(-4), state)
+        setConnectionStates(prev => new Map(prev.set(sessionId, state)))
+        
+        // Update connecting state based on overall connection status
+        const summary = service.getConnectionSummary()
+        setIsConnecting(summary.connectingPeers > 0)
+      }
+      
+      // Initialize service (signaling only, no media yet)
       const result = await service.initialize()
       
       if (result.success) {
         webrtcServiceRef.current = service
         setIsInitialized(true)
+        setIsConnecting(false)
         
-        // Only set local stream if we got one (when lazyMedia = false)
-        if (result.localStream) {
-          setLocalStream(result.localStream)
-          setHasRequestedMedia(true)
-        }
-        
-        // Join the room to announce presence
+        // Join room to announce presence
         await service.joinRoom()
         
-        console.log('✅ WebRTC initialized successfully', { hasLocalStream: !!result.localStream })
+        console.log('✅ WebRTC initialized and joined room')
       } else {
         throw result.error
       }
     } catch (error) {
-      console.error('❌ Failed to initialize WebRTC:', error)
+      console.error('❌ WebRTC initialization failed:', error)
       setError(error.message)
+      setIsInitialized(false)
+      setIsConnecting(false)
     }
   }
 
   const cleanup = useCallback(() => {
+    console.log('🧹 Cleaning up WebRTC')
+    
     if (webrtcServiceRef.current) {
-      console.log('🧹 Cleaning up WebRTC')
-      webrtcServiceRef.current.leaveRoom()
       webrtcServiceRef.current.cleanup()
       webrtcServiceRef.current = null
     }
@@ -103,69 +106,110 @@ export const useWebRTC = (user, currentRoom, options = {}) => {
     setIsInitialized(false)
     setLocalStream(null)
     setRemoteStreams(new Map())
+    setConnectionStates(new Map())
     setIsVideoEnabled(false)
     setIsAudioEnabled(false)
     setHasRequestedMedia(false)
+    setIsConnecting(false)
     setError(null)
   }, [])
 
-  // Toggle video - request media if needed
+  // Toggle video - request permissions if needed
   const toggleVideo = useCallback(async () => {
-    if (!webrtcServiceRef.current) return false
+    if (!webrtcServiceRef.current || !isInitialized) {
+      console.log('❌ WebRTC not ready for video toggle')
+      return false
+    }
 
     try {
-      // If we haven't requested media yet, request it now
+      setIsConnecting(true) // Show connecting while requesting permissions
+      
+      // Request media permissions if first time
       if (!hasRequestedMedia) {
-        console.log('📹 Requesting media permissions for first time...')
+        console.log('📹 Requesting media for first time...')
         const stream = await webrtcServiceRef.current.requestMediaPermissions()
         if (stream) {
           setLocalStream(stream)
           setHasRequestedMedia(true)
-        } else {
-          throw new Error('Failed to get media permissions')
+          
+          // Update audio state based on actual track state
+          const audioTrack = stream.getAudioTracks()[0]
+          if (audioTrack) {
+            setIsAudioEnabled(audioTrack.enabled)
+          }
         }
       }
 
-      // Toggle the video
+      // Toggle video track
       const enabled = webrtcServiceRef.current.toggleVideo()
       setIsVideoEnabled(enabled)
+      setIsConnecting(false)
+      
       console.log('📹 Video toggled:', enabled)
       return enabled
     } catch (error) {
-      console.error('❌ Error toggling video:', error)
+      console.error('❌ Video toggle failed:', error)
       setError(error.message)
+      setIsConnecting(false)
       return false
     }
-  }, [hasRequestedMedia])
+  }, [isInitialized, hasRequestedMedia])
 
-  // Toggle audio - request media if needed  
+  // Toggle audio - request permissions if needed
   const toggleAudio = useCallback(async () => {
-    if (!webrtcServiceRef.current) return false
+    if (!webrtcServiceRef.current || !isInitialized) {
+      console.log('❌ WebRTC not ready for audio toggle')
+      return false
+    }
 
     try {
-      // If we haven't requested media yet, request it now
+      setIsConnecting(true) // Show connecting while requesting permissions
+      
+      // Request media permissions if first time
       if (!hasRequestedMedia) {
-        console.log('🎤 Requesting media permissions for first time...')
+        console.log('🎤 Requesting media for first time...')
         const stream = await webrtcServiceRef.current.requestMediaPermissions()
         if (stream) {
           setLocalStream(stream)
           setHasRequestedMedia(true)
-        } else {
-          throw new Error('Failed to get media permissions')
+          
+          // Update video state based on actual track state
+          const videoTrack = stream.getVideoTracks()[0]
+          if (videoTrack) {
+            setIsVideoEnabled(videoTrack.enabled)
+          }
         }
       }
 
-      // Toggle the audio
+      // Toggle audio track
       const enabled = webrtcServiceRef.current.toggleAudio()
       setIsAudioEnabled(enabled)
+      setIsConnecting(false)
+      
       console.log('🎤 Audio toggled:', enabled)
       return enabled
     } catch (error) {
-      console.error('❌ Error toggling audio:', error)
+      console.error('❌ Audio toggle failed:', error)
       setError(error.message)
+      setIsConnecting(false)
       return false
     }
-  }, [hasRequestedMedia])
+  }, [isInitialized, hasRequestedMedia])
+
+  // Get connection summary for UI
+  const getConnectionSummary = useCallback(() => {
+    if (!webrtcServiceRef.current) {
+      return {
+        totalConnections: 0,
+        connectedPeers: 0,
+        connectingPeers: 0,
+        failedPeers: 0,
+        remoteStreams: 0
+      }
+    }
+    
+    return webrtcServiceRef.current.getConnectionSummary()
+  }, [])
 
   return {
     isInitialized,
@@ -175,7 +219,10 @@ export const useWebRTC = (user, currentRoom, options = {}) => {
     isAudioEnabled,
     hasRequestedMedia,
     error,
+    connectionStates,
+    isConnecting,
     toggleVideo,
-    toggleAudio
+    toggleAudio,
+    getConnectionSummary
   }
 }

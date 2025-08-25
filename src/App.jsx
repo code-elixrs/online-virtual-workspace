@@ -26,10 +26,10 @@ const App = () => {
     toggleVideo, 
     toggleAudio,
     isInitialized,
-    hasRequestedMedia, // New - tracks if we've asked for permissions
+    hasRequestedMedia,
     error: webrtcError
   } = useWebRTC(user, currentRoom, {
-    lazyMedia: true // 🔑 Don't request media until user wants it
+    lazyMedia: true
   });
 
   // Test connection and restore session on app load
@@ -37,26 +37,20 @@ const App = () => {
     const initializeApp = async () => {
       console.log('🚀 Initializing app...');
       
-      // Test connection
       const isConnected = await testConnection();
       setConnectionStatus(isConnected ? 'connected ✅' : 'failed ❌');
 
       if (isConnected) {
-        // Try to restore saved session
         const savedSession = tabManager.getSavedSession();
         if (savedSession && savedSession.user) {
           console.log('🔄 Attempting to restore session for:', savedSession.user.name);
           
-          // Check if username is still available (no active session)
           const { available } = await usernameService.isUsernameAvailable(savedSession.user.name);
           
           if (available) {
             console.log('✅ Username available, restoring session');
-            
-            // Restore user immediately (usePresence will handle database insertion)
             setUser(savedSession.user);
             setCurrentRoom(savedSession.room);
-            
             console.log('✅ Session restored successfully');
           } else {
             console.log('❌ Username no longer available, clearing session');
@@ -79,7 +73,6 @@ const App = () => {
     const newUser = { name: username, sessionId: sessionId };
     setUser(newUser);
     
-    // Save to localStorage for persistence (position will be saved by usePresence)
     tabManager.saveUserSession(newUser, { x: 50, y: 50 }, null);
   };
 
@@ -88,7 +81,6 @@ const App = () => {
     setCurrentRoom(roomName);
     setIsChatOpen(true);
     
-    // Update saved session
     const savedPos = tabManager.getSavedPosition();
     tabManager.updateSession(savedPos, roomName);
   };
@@ -98,7 +90,6 @@ const App = () => {
     setCurrentRoom(null);
     setIsChatOpen(false);
     
-    // Update saved session
     const savedPos = tabManager.getSavedPosition();
     tabManager.updateSession(savedPos, null);
   };
@@ -112,7 +103,6 @@ const App = () => {
     setUser(null);
     setCurrentRoom(null);
     setIsChatOpen(false);
-    // tabManager.clearSession() is called by SignoutButton
   };
 
   // 🎬 FIXED: Better VideoGrid visibility logic
@@ -122,12 +112,10 @@ const App = () => {
     const hasLocalVideo = localStream && isVideoEnabled;
     const hasRemoteVideo = remoteStreams.size > 0;
     
-    console.log('🎬 VideoGrid visibility check:', { 
+    console.log('🎬 VideoGrid check:', { 
       hasLocalVideo, 
       hasRemoteVideo, 
-      remoteCount: remoteStreams.size,
-      localStreamExists: !!localStream,
-      isVideoEnabled 
+      remoteCount: remoteStreams.size 
     });
     
     return hasLocalVideo || hasRemoteVideo;
@@ -156,18 +144,21 @@ const App = () => {
   return (
     <div className="bg-gray-950 min-h-screen flex flex-col">
       {/* Connection status */}
-      <div className="bg-gray-800 text-white p-1 text-center text-xs flex-shrink-0">
-        Supabase: {connectionStatus} • User: {user.name} • Session: {user.sessionId?.slice(-6)}
-        {webrtcError && <span className="text-red-400 ml-2">• WebRTC: {webrtcError}</span>}
-        {/* Debug info */}
-        {currentRoom && (
-          <span className="text-blue-400 ml-2">
-            • Remote: {remoteStreams.size} • LocalVideo: {isVideoEnabled ? '📹' : '❌'}
-          </span>
-        )}
+      <div className="bg-gray-800 text-white p-2 text-center text-xs flex-shrink-0">
+        <div className="flex justify-center items-center space-x-4">
+          <span>Supabase: {connectionStatus}</span>
+          <span>User: {user.name}</span>
+          <span>Session: {user.sessionId?.slice(-6)}</span>
+          {webrtcError && <span className="text-red-400">WebRTC: {webrtcError}</span>}
+          {currentRoom && (
+            <span className="text-blue-400">
+              Room: {currentRoom} | Remote: {remoteStreams.size} | Local: {isVideoEnabled ? '📹' : '❌'}
+            </span>
+          )}
+        </div>
       </div>
       
-      {/* Room Controls (only show when in a room) */}
+      {/* Room Controls */}
       {currentRoom && (
         <div className="flex-shrink-0">
           <RoomControls
@@ -176,7 +167,6 @@ const App = () => {
             onToggleChat={handleToggleChat}
             isChatOpen={isChatOpen}
             user={user}
-            // 🎥 Pass WebRTC state and controls as props
             isWebRTCInitialized={isInitialized}
             isVideoEnabled={isVideoEnabled}
             isAudioEnabled={isAudioEnabled}
@@ -188,42 +178,54 @@ const App = () => {
         </div>
       )}
       
-      {/* Main Content Area */}
-      <div className="flex-1 flex min-h-0">
-        {/* Lobby View */}
-        <div className="flex-1 min-w-0 flex flex-col">
-          <LobbyView 
-            onJoinRoom={handleJoinRoom}
-            user={user}
-            currentRoom={currentRoom}
-            onSignout={handleSignout}
-          />
+      {/* 🎨 FIXED: Main Content Area with proper flex layout */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left side: Lobby + Video */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Lobby View */}
+          <div className={`${shouldShowVideoGrid() ? 'flex-1' : 'flex-1'} overflow-auto`}>
+            <LobbyView 
+              onJoinRoom={handleJoinRoom}
+              user={user}
+              currentRoom={currentRoom}
+              onSignout={handleSignout}
+            />
+          </div>
           
-          {/* Video Area - Show ONLY when there are active video streams */}
+          {/* Video Area - FIXED: Proper sizing and positioning */}
           {shouldShowVideoGrid() && (
-            <div className="h-80 p-4 bg-gray-950">
-              <div className="bg-gray-800 rounded-lg p-2 mb-2">
-                <div className="text-xs text-gray-400">
-                  🎬 Video Active - Local: {localStream && isVideoEnabled ? '📹' : '❌'} | Remote: {remoteStreams.size}
+            <div className="flex-shrink-0 bg-gray-900 border-t border-gray-700">
+              {/* Video Header */}
+              <div className="bg-gray-800 px-4 py-2 border-b border-gray-600">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-white text-sm font-medium">Video Conference</h3>
+                  <div className="text-xs text-gray-400">
+                    {localStream && isVideoEnabled && '📹 You'} 
+                    {remoteStreams.size > 0 && (remoteStreams.size === 1 ? ' + 1 other' : ` + ${remoteStreams.size} others`)}
+                  </div>
                 </div>
               </div>
-              <VideoGrid
-                localStream={localStream}
-                remoteStreams={remoteStreams}
-                currentUser={user}
-                isVideoEnabled={isVideoEnabled}
-                isAudioEnabled={isAudioEnabled}
-                onToggleVideo={toggleVideo}
-                onToggleAudio={toggleAudio}
-                className="h-full"
-              />
+              
+              {/* Video Grid Container - FIXED: Proper height constraints */}
+              <div className="h-64 md:h-80 p-4">
+                <VideoGrid
+                  localStream={localStream}
+                  remoteStreams={remoteStreams}
+                  currentUser={user}
+                  isVideoEnabled={isVideoEnabled}
+                  isAudioEnabled={isAudioEnabled}
+                  onToggleVideo={toggleVideo}
+                  onToggleAudio={toggleAudio}
+                  className="h-full w-full"
+                />
+              </div>
             </div>
           )}
         </div>
         
-        {/* Chat Panel */}
+        {/* Right side: Chat Panel - FIXED: Proper width constraints */}
         {isChatOpen && (
-          <div className="flex-shrink-0">
+          <div className="flex-shrink-0 w-80 border-l border-gray-700">
             <ChatPanel
               roomName={currentRoom}
               user={user}
