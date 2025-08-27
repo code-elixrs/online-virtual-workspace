@@ -3,6 +3,12 @@ import { supabase } from '../supabaseClient'
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  // Add TURN servers for better connectivity
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
 ]
 
 export class WebRTCService {
@@ -11,58 +17,63 @@ export class WebRTCService {
     this.roomName = roomName
     this.options = options
     this.localStream = null
-    this.peerConnections = new Map() // sessionId -> RTCPeerConnection
-    this.remoteStreams = new Map() // sessionId -> MediaStream
+    this.peerConnections = new Map()
+    this.remoteStreams = new Map()
     this.signalChannel = null
     this.onStreamAdded = null
     this.onStreamRemoved = null
+    this.onConnectionStateChange = null
     this.mediaRequested = false
     this.isCleaningUp = false
+    
+    // Debug logging
+    this.debug = true
+    this.log = (message, ...args) => {
+      if (this.debug) {
+        console.log(`[WebRTC-${this.user.sessionId?.slice(-4)}] ${message}`, ...args)
+      }
+    }
   }
 
-  // Initialize WebRTC service
   async initialize() {
-    console.log('🚀 Initializing WebRTC service for:', this.user.name, 'in', this.roomName)
+    this.log('Initializing WebRTC service for:', this.user.name, 'in', this.roomName)
     
     try {
-      // Set up signaling first (always needed for receiving remote streams)
       await this.setupSignaling()
       
-      // In lazy mode, don't request media immediately
       if (!this.options.lazyMedia) {
         this.localStream = await this.requestMediaPermissions()
         this.mediaRequested = true
       }
       
-      console.log('✅ WebRTC service initialized')
+      this.log('WebRTC service initialized successfully')
       return { success: true, localStream: this.localStream }
     } catch (error) {
-      console.error('❌ Failed to initialize WebRTC:', error)
+      this.log('Failed to initialize WebRTC:', error)
       return { success: false, error }
     }
   }
 
-  // Request media permissions
   async requestMediaPermissions() {
     if (this.mediaRequested && this.localStream) {
-      console.log('📹 Media already available')
+      this.log('Media already available')
       return this.localStream
     }
 
     try {
-      console.log('📹 Requesting camera and microphone permissions...')
+      this.log('Requesting camera and microphone permissions...')
       
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 1280, height: 720 },
         audio: true
       })
       
-      console.log('✅ Got media stream with tracks:', stream.getTracks().map(t => `${t.kind}`))
+      this.log('Got media stream with tracks:', stream.getTracks().map(t => `${t.kind}:${t.enabled}`))
       
       // Start with tracks disabled in lazy mode
       stream.getTracks().forEach(track => {
         track.enabled = false
-        console.log('🔇 Track disabled by default:', track.kind)
+        this.log('Track disabled by default:', track.kind)
       })
       
       this.localStream = stream
@@ -73,56 +84,64 @@ export class WebRTCService {
       
       return stream
     } catch (error) {
-      console.error('❌ Failed to get media permissions:', error)
+      this.log('Failed to get media permissions:', error)
       throw error
     }
   }
 
-  // Add local stream to all existing peer connections
   async addStreamToAllConnections() {
     if (!this.localStream || this.peerConnections.size === 0) {
-      console.log('⏳ No stream or connections to update')
+      this.log('No stream or connections to update')
       return
     }
 
-    console.log('➕ Adding local stream to', this.peerConnections.size, 'existing connections')
+    this.log('Adding local stream to', this.peerConnections.size, 'existing connections')
     
     for (const [sessionId, pc] of this.peerConnections) {
       try {
-        // Remove existing tracks from this connection
+        // Remove existing tracks
         const existingSenders = pc.getSenders()
         for (const sender of existingSenders) {
           if (sender.track) {
             pc.removeTrack(sender)
-            console.log('➖ Removed old track from:', sessionId)
+            this.log('Removed old track from:', sessionId?.slice(-4))
           }
         }
         
         // Add new tracks
         this.localStream.getTracks().forEach(track => {
-          const sender = pc.addTrack(track, this.localStream)
-          console.log('➕ Added track to', sessionId, ':', track.kind, 'enabled:', track.enabled)
+          pc.addTrack(track, this.localStream)
+          this.log('Added track to', sessionId?.slice(-4), ':', track.kind, 'enabled:', track.enabled)
         })
         
-        // Renegotiate the connection
+        // Force renegotiation
         if (pc.signalingState === 'stable') {
-          console.log('🔄 Renegotiating connection with:', sessionId)
-          const offer = await pc.createOffer()
+          this.log('Creating new offer for:', sessionId?.slice(-4))
+          const offer = await pc.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+          })
           await pc.setLocalDescription(offer)
-          this.sendSignal('offer', offer, sessionId)
+          await this.sendSignal('offer', offer, sessionId)
+          this.log('Offer sent to:', sessionId?.slice(-4))
         }
         
       } catch (error) {
-        console.error('❌ Error adding stream to connection:', sessionId, error)
+        this.log('Error adding stream to connection:', sessionId?.slice(-4), error)
       }
     }
   }
 
-  // Set up Supabase signaling channel
   async setupSignaling() {
-    console.log('📡 Setting up signaling for room:', this.roomName)
+    this.log('Setting up signaling for room:', this.roomName)
     
-    // Create unique channel name to avoid conflicts
+    // Test database connection first
+    const { data, error } = await supabase.from('webrtc_signals').select('count').limit(1)
+    if (error) {
+      throw new Error(`Database connection failed: ${error.message}`)
+    }
+    this.log('Database connection verified')
+    
     const channelName = `webrtc-${this.roomName}-${Date.now()}`
     
     this.signalChannel = supabase
@@ -137,35 +156,35 @@ export class WebRTCService {
         },
         (payload) => {
           if (!this.isCleaningUp) {
-            console.log('📨 Received signal:', payload.new.signal_type, 'from:', payload.new.from_session_id?.slice(-4))
+            this.log('Received signal:', payload.new.signal_type, 'from:', payload.new.from_session_id?.slice(-4))
             this.handleSignal(payload.new)
           }
         }
       )
       .subscribe((status) => {
-        console.log('📡 Signaling channel status:', status)
+        this.log('Signaling channel status:', status)
+        if (status === 'SUBSCRIBED') {
+          this.log('Signaling channel ready')
+        }
       })
       
-    // Wait a moment for subscription to be ready
-    await new Promise(resolve => setTimeout(resolve, 500))
+    // Wait for subscription
+    await new Promise(resolve => setTimeout(resolve, 1000))
   }
 
-  // Handle incoming WebRTC signals
   async handleSignal(signal) {
     if (this.isCleaningUp) return
     
-    // Skip our own signals
     if (signal.from_session_id === this.user.sessionId) {
-      return
+      return // Skip our own signals
     }
     
-    // Skip signals not for us
     if (signal.to_session_id && signal.to_session_id !== this.user.sessionId) {
-      return
+      return // Skip signals not for us
     }
 
     const fromSessionId = signal.from_session_id
-    console.log('🔧 Processing:', signal.signal_type, 'from:', fromSessionId?.slice(-4))
+    this.log('Processing:', signal.signal_type, 'from:', fromSessionId?.slice(-4))
     
     try {
       switch (signal.signal_type) {
@@ -186,18 +205,17 @@ export class WebRTCService {
           break
       }
     } catch (error) {
-      console.error('❌ Error handling signal:', error)
+      this.log('Error handling signal:', error)
     }
   }
 
-  // Create peer connection
   createPeerConnection(sessionId) {
     if (this.peerConnections.has(sessionId)) {
-      console.log('♻️ Reusing existing connection for:', sessionId?.slice(-4))
+      this.log('Reusing existing connection for:', sessionId?.slice(-4))
       return this.peerConnections.get(sessionId)
     }
     
-    console.log('🔗 Creating NEW peer connection for:', sessionId?.slice(-4))
+    this.log('Creating NEW peer connection for:', sessionId?.slice(-4))
     
     const pc = new RTCPeerConnection({ 
       iceServers: ICE_SERVERS,
@@ -207,112 +225,123 @@ export class WebRTCService {
     // Add local stream if available
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
-        const sender = pc.addTrack(track, this.localStream)
-        console.log('➕ Added local track:', track.kind, 'enabled:', track.enabled)
+        pc.addTrack(track, this.localStream)
+        this.log('Added local track to new connection:', track.kind, 'enabled:', track.enabled)
       })
     }
     
-    // Handle remote stream
+    // Handle remote stream - CRITICAL FIX
     pc.ontrack = (event) => {
-      console.log('🎬 Remote track received from:', sessionId?.slice(-4), 'kind:', event.track.kind)
+      this.log('Remote track received from:', sessionId?.slice(-4), 'kind:', event.track.kind, 'enabled:', event.track.enabled)
       const [remoteStream] = event.streams
       
-      if (remoteStream && remoteStream.getTracks().length > 0) {
-        console.log('📺 Remote stream has', remoteStream.getTracks().length, 'tracks')
+      if (remoteStream) {
+        this.log('Remote stream received with', remoteStream.getTracks().length, 'tracks')
+        
+        // Store the stream
         this.remoteStreams.set(sessionId, remoteStream)
         
+        // Notify UI
         if (this.onStreamAdded) {
-          console.log('📢 Notifying about new remote stream:', sessionId?.slice(-4))
+          this.log('Notifying UI about new remote stream:', sessionId?.slice(-4))
           this.onStreamAdded(sessionId, remoteStream)
         }
+        
+        // Log track details
+        remoteStream.getTracks().forEach(track => {
+          this.log(`Remote ${track.kind} track:`, track.enabled, track.readyState)
+        })
       }
     }
     
-    // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('🧊 ICE candidate for:', sessionId?.slice(-4))
+        this.log('Sending ICE candidate to:', sessionId?.slice(-4))
         this.sendSignal('ice-candidate', event.candidate, sessionId)
       } else {
-        console.log('🧊 ICE gathering complete for:', sessionId?.slice(-4))
+        this.log('ICE gathering complete for:', sessionId?.slice(-4))
       }
     }
     
-    // Connection state monitoring
     pc.onconnectionstatechange = () => {
-      console.log('🔌', sessionId?.slice(-4), 'connection:', pc.connectionState)
+      this.log(sessionId?.slice(-4), 'connection state:', pc.connectionState)
       
-      if (pc.connectionState === 'connected') {
-        console.log('✅ Connected to:', sessionId?.slice(-4))
-      } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-        console.log('💔 Connection failed/closed:', sessionId?.slice(-4))
+      if (this.onConnectionStateChange) {
+        this.onConnectionStateChange(sessionId, pc.connectionState)
+      }
+      
+      if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+        this.log('Connection failed/closed:', sessionId?.slice(-4))
         setTimeout(() => this.removePeerConnection(sessionId), 1000)
       }
     }
     
     pc.oniceconnectionstatechange = () => {
-      console.log('🧊', sessionId?.slice(-4), 'ICE:', pc.iceConnectionState)
+      this.log(sessionId?.slice(-4), 'ICE state:', pc.iceConnectionState)
+    }
+    
+    pc.onsignalingstatechange = () => {
+      this.log(sessionId?.slice(-4), 'Signaling state:', pc.signalingState)
     }
     
     this.peerConnections.set(sessionId, pc)
     return pc
   }
 
-  // Handle offer
   async handleOffer(fromSessionId, offerData) {
-    console.log('📞 Handling offer from:', fromSessionId?.slice(-4))
+    this.log('Handling offer from:', fromSessionId?.slice(-4))
     
     try {
       const pc = this.createPeerConnection(fromSessionId)
       
       await pc.setRemoteDescription(new RTCSessionDescription(offerData))
-      console.log('📥 Set remote description (offer)')
+      this.log('Set remote description (offer) from:', fromSessionId?.slice(-4))
       
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
-      console.log('📤 Sending answer to:', fromSessionId?.slice(-4))
       
-      this.sendSignal('answer', answer, fromSessionId)
+      await this.sendSignal('answer', answer, fromSessionId)
+      this.log('Answer sent to:', fromSessionId?.slice(-4))
+      
     } catch (error) {
-      console.error('❌ Error handling offer:', error)
+      this.log('Error handling offer from:', fromSessionId?.slice(-4), error)
     }
   }
 
-  // Handle answer
   async handleAnswer(fromSessionId, answerData) {
-    console.log('📞 Handling answer from:', fromSessionId?.slice(-4))
+    this.log('Handling answer from:', fromSessionId?.slice(-4))
     
     const pc = this.peerConnections.get(fromSessionId)
     if (pc && pc.signalingState === 'have-local-offer') {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(answerData))
-        console.log('✅ Answer processed for:', fromSessionId?.slice(-4))
+        this.log('Answer processed for:', fromSessionId?.slice(-4))
       } catch (error) {
-        console.error('❌ Error handling answer:', error)
+        this.log('Error handling answer from:', fromSessionId?.slice(-4), error)
       }
     } else {
-      console.warn('⚠️ No pending offer for answer from:', fromSessionId?.slice(-4))
+      this.log('No pending offer for answer from:', fromSessionId?.slice(-4), 'signaling state:', pc?.signalingState)
     }
   }
 
-  // Handle ICE candidate
   async handleIceCandidate(fromSessionId, candidateData) {
     const pc = this.peerConnections.get(fromSessionId)
-    if (pc && candidateData) {
+    if (pc && pc.remoteDescription && candidateData) {
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidateData))
-        console.log('✅ ICE candidate added for:', fromSessionId?.slice(-4))
+        this.log('ICE candidate added for:', fromSessionId?.slice(-4))
       } catch (error) {
-        console.error('❌ Error adding ICE candidate:', error)
+        this.log('Error adding ICE candidate from:', fromSessionId?.slice(-4), error)
       }
+    } else {
+      this.log('Cannot add ICE candidate from:', fromSessionId?.slice(-4), 'PC exists:', !!pc, 'Remote desc:', !!pc?.remoteDescription)
     }
   }
 
-  // Handle user joined
   async handleUserJoined(sessionId, signalData) {
-    console.log('👋 User joined:', signalData?.userName, '(' + sessionId?.slice(-4) + ')')
+    this.log('User joined:', signalData?.userName, '(' + sessionId?.slice(-4) + ')')
     
-    // Small delay to ensure both sides are ready
+    // Add delay to prevent race conditions
     setTimeout(async () => {
       if (!this.peerConnections.has(sessionId) && !this.isCleaningUp) {
         try {
@@ -324,23 +353,21 @@ export class WebRTCService {
           })
           
           await pc.setLocalDescription(offer)
-          console.log('📤 Sending offer to new user:', sessionId?.slice(-4))
+          this.log('Sending offer to new user:', sessionId?.slice(-4))
           
-          this.sendSignal('offer', offer, sessionId)
+          await this.sendSignal('offer', offer, sessionId)
         } catch (error) {
-          console.error('❌ Error creating offer for new user:', error)
+          this.log('Error creating offer for new user:', sessionId?.slice(-4), error)
         }
       }
-    }, Math.random() * 1000 + 500) // Random delay 500-1500ms to prevent race conditions
+    }, Math.random() * 1000 + 1000) // 1-2 second delay
   }
 
-  // Handle user left
   async handleUserLeft(sessionId) {
-    console.log('👋 User left:', sessionId?.slice(-4))
+    this.log('User left:', sessionId?.slice(-4))
     this.removePeerConnection(sessionId)
   }
 
-  // Send signal
   async sendSignal(type, data, toSessionId = null) {
     if (this.isCleaningUp) return
     
@@ -350,126 +377,131 @@ export class WebRTCService {
         from_session_id: this.user.sessionId,
         to_session_id: toSessionId,
         signal_type: type,
-        signal_data: data
+        signal_data: data,
+        created_at: new Date().toISOString()
       }
       
-      const { error } = await supabase
+      this.log('Sending signal:', type, 'to:', toSessionId?.slice(-4) || 'all')
+      
+      const { data: result, error } = await supabase
         .from('webrtc_signals')
         .insert(signalData)
+        .select()
       
       if (error) {
-        console.error('❌ Signal send failed:', error)
+        this.log('Signal send failed:', error)
+        throw error
       } else {
-        console.log('📤 Signal sent:', type, 'to:', toSessionId?.slice(-4) || 'all')
+        this.log('Signal sent successfully:', type)
       }
     } catch (error) {
-      console.error('❌ Exception sending signal:', error)
+      this.log('Exception sending signal:', error)
+      throw error
     }
   }
 
-  // Join room
   async joinRoom() {
-    console.log('🚪 Joining WebRTC room:', this.roomName)
+    this.log('Joining WebRTC room:', this.roomName)
     await this.sendSignal('user-joined', { 
       timestamp: Date.now(),
       userName: this.user.name 
     })
   }
 
-  // Leave room
   async leaveRoom() {
-    console.log('🚪 Leaving WebRTC room')
+    this.log('Leaving WebRTC room')
     await this.sendSignal('user-left', { timestamp: Date.now() })
   }
 
-  // Toggle video - FIXED camera control
   toggleVideo() {
     if (!this.localStream) {
-      console.log('❌ No local stream for video toggle')
+      this.log('No local stream for video toggle')
       return false
     }
 
     const videoTrack = this.localStream.getVideoTracks()[0]
     if (videoTrack) {
       videoTrack.enabled = !videoTrack.enabled
-      console.log('📹 Video track enabled:', videoTrack.enabled)
-      
-      // 🔧 FIXED: Stop/start track properly instead of just disabling
-      if (!videoTrack.enabled) {
-        // When disabling, actually stop the track to turn off camera light
-        videoTrack.stop()
-        console.log('🛑 Video track stopped (camera off)')
-        
-        // Create a new disabled video track
-        this.requestNewVideoTrack(false)
-      }
-      
+      this.log('Video track enabled:', videoTrack.enabled)
       return videoTrack.enabled
     }
     return false
   }
 
-  // Request new video track (for proper camera control)
-  async requestNewVideoTrack(enabled = true) {
-    try {
-      if (!enabled) return // Don't request new track when disabling
-      
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
-      const newVideoTrack = stream.getVideoTracks()[0]
-      
-      if (newVideoTrack && this.localStream) {
-        // Replace the old video track
-        const oldVideoTrack = this.localStream.getVideoTracks()[0]
-        if (oldVideoTrack) {
-          this.localStream.removeTrack(oldVideoTrack)
-        }
-        
-        this.localStream.addTrack(newVideoTrack)
-        newVideoTrack.enabled = enabled
-        
-        // Update all peer connections
-        this.peerConnections.forEach(async (pc, sessionId) => {
-          const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video')
-          if (sender) {
-            await sender.replaceTrack(newVideoTrack)
-            console.log('🔄 Video track replaced for:', sessionId?.slice(-4))
-          }
-        })
-        
-        console.log('✅ New video track created and enabled:', enabled)
-      }
-    } catch (error) {
-      console.error('❌ Error creating new video track:', error)
-    }
-  }
-
-  // Toggle audio
   toggleAudio() {
     if (!this.localStream) {
-      console.log('❌ No local stream for audio toggle')
+      this.log('No local stream for audio toggle')
       return false
     }
 
     const audioTrack = this.localStream.getAudioTracks()[0]
     if (audioTrack) {
       audioTrack.enabled = !audioTrack.enabled
-      console.log('🎤 Audio enabled:', audioTrack.enabled)
+      this.log('Audio enabled:', audioTrack.enabled)
       return audioTrack.enabled
     }
     return false
   }
 
-  // Remove peer connection
+  getConnectionSummary() {
+    const totalConnections = this.peerConnections.size
+    let connectedPeers = 0
+    let connectingPeers = 0
+    let failedPeers = 0
+    
+    this.peerConnections.forEach((pc) => {
+      switch (pc.connectionState) {
+        case 'connected':
+          connectedPeers++
+          break
+        case 'connecting':
+        case 'new':
+          connectingPeers++
+          break
+        case 'failed':
+        case 'disconnected':
+        case 'closed':
+          failedPeers++
+          break
+      }
+    })
+    
+    return {
+      totalConnections,
+      connectedPeers,
+      connectingPeers,
+      failedPeers,
+      remoteStreams: this.remoteStreams.size
+    }
+  }
+
+  // Debug method
+  logDebugInfo() {
+    this.log('=== DEBUG INFO ===')
+    this.log('Local stream tracks:', this.localStream?.getTracks().map(t => `${t.kind}:${t.enabled}`) || 'None')
+    this.log('Peer connections:', this.peerConnections.size)
+    this.log('Remote streams:', this.remoteStreams.size)
+    
+    this.peerConnections.forEach((pc, sessionId) => {
+      this.log(`${sessionId?.slice(-4)}: ${pc.connectionState} | ICE: ${pc.iceConnectionState} | Signaling: ${pc.signalingState}`)
+    })
+    
+    this.remoteStreams.forEach((stream, sessionId) => {
+      this.log(`Remote ${sessionId?.slice(-4)}:`, stream.getTracks().map(t => `${t.kind}:${t.enabled}`))
+    })
+    this.log('==================')
+  }
+
   removePeerConnection(sessionId) {
     const pc = this.peerConnections.get(sessionId)
     if (pc) {
-      console.log('🗑️ Removing peer connection:', sessionId?.slice(-4))
+      this.log('Removing peer connection:', sessionId?.slice(-4))
       pc.close()
       this.peerConnections.delete(sessionId)
     }
     
     if (this.remoteStreams.has(sessionId)) {
-      console.log('📺 Removing remote stream:', sessionId?.slice(-4))
+      this.log('Removing remote stream:', sessionId?.slice(-4))
       this.remoteStreams.delete(sessionId)
       
       if (this.onStreamRemoved) {
@@ -478,31 +510,27 @@ export class WebRTCService {
     }
   }
 
-  // Cleanup
   cleanup() {
-    console.log('🧹 Cleaning up WebRTC service')
+    this.log('Cleaning up WebRTC service')
     this.isCleaningUp = true
     
-    // Close all peer connections
     this.peerConnections.forEach((pc, sessionId) => {
-      console.log('🔌 Closing connection:', sessionId?.slice(-4))
+      this.log('Closing connection:', sessionId?.slice(-4))
       pc.close()
     })
     this.peerConnections.clear()
     this.remoteStreams.clear()
     
-    // Stop and clean up local stream
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
-        console.log('🛑 Stopping track:', track.kind)
+        this.log('Stopping track:', track.kind)
         track.stop()
       })
       this.localStream = null
     }
     
-    // Close signaling
     if (this.signalChannel) {
-      console.log('📡 Closing signaling channel')
+      this.log('Closing signaling channel')
       supabase.removeChannel(this.signalChannel)
       this.signalChannel = null
     }

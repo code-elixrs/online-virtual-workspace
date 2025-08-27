@@ -211,6 +211,22 @@ export const useWebRTC = (user, currentRoom, options = {}) => {
     return webrtcServiceRef.current.getConnectionSummary()
   }, [])
 
+  // Debug function
+    const logDebugInfo = useCallback(() => {
+    if (webrtcServiceRef.current) {
+        webrtcServiceRef.current.logDebugInfo()
+    }
+    }, [])
+
+    // Add debugging interval
+    useEffect(() => {
+    const interval = setInterval(() => {
+        logDebugInfo()
+    }, 10000) // Log every 10 seconds
+
+    return () => clearInterval(interval)
+    }, [logDebugInfo])
+
   return {
     isInitialized,
     localStream,

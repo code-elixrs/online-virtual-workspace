@@ -32,6 +32,18 @@ const App = () => {
     lazyMedia: true
   });
 
+
+    useEffect(() => {
+      const interval = setInterval(() => {
+        // Access the WebRTC service through the hook's internal ref
+        // You'll need to modify useWebRTC.js to expose this
+        if (window.debugWebRTC) {
+          window.debugWebRTC()
+        }
+      }, 10000) // Log every 10 seconds
+
+      return () => clearInterval(interval)
+    }, [])
   // Test connection and restore session on app load
   useEffect(() => {
     const initializeApp = async () => {

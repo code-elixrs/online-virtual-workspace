@@ -85,19 +85,27 @@ const VideoGrid = ({
      )}
      
      {/* Remote Video Feeds */}
-     {Array.from(remoteStreams.entries()).map(([sessionId, stream]) => (
-       <div key={sessionId} className="min-h-0">
-         <VideoFeed
-           stream={stream}
-           sessionId={sessionId}
-           userName={`User ${sessionId.slice(-4)}`}
-           isLocal={false}
-           isVideoEnabled={true} // Remote streams are enabled if we receive them
-           isAudioEnabled={true}
-           className="h-full w-full"
-         />
-       </div>
-     ))}
+    {Array.from(remoteStreams.entries()).map(([sessionId, stream]) => {
+    // Check if remote stream actually has video track
+    const hasVideoTrack = stream.getVideoTracks().length > 0
+    const hasAudioTrack = stream.getAudioTracks().length > 0
+    const videoTrack = stream.getVideoTracks()[0]
+    const audioTrack = stream.getAudioTracks()[0]
+    
+    return (
+        <div key={sessionId} className="min-h-0">
+        <VideoFeed
+            stream={stream}
+            sessionId={sessionId}
+            userName={`User ${sessionId.slice(-4)}`}
+            isLocal={false}
+            isVideoEnabled={hasVideoTrack && videoTrack?.enabled !== false}
+            isAudioEnabled={hasAudioTrack && audioTrack?.enabled !== false}
+            className="h-full w-full"
+        />
+        </div>
+    )
+    })}
    </div>
  );
 };

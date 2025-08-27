@@ -1,5 +1,6 @@
 // Room Component
 const Room = ({ name, onClick, isSelected, isLocked }) => {
+    
   return (
     <div
       className={`relative flex flex-col items-center justify-center p-4 rounded-xl shadow-md cursor-pointer transition-transform duration-200 hover:scale-105 hover:shadow-2xl
